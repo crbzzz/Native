@@ -13,18 +13,34 @@ from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Charge d'abord le .env à la racine (si présent), puis celui du backend (si présent)
-load_dotenv(os.path.join(BASE_DIR, "..", ".env"))
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+# Charge des .env potentiels (root/backend/interface), sans override.
+ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+_ENV_CANDIDATES = [
+    os.path.join(ROOT_DIR, ".env"),
+    os.path.join(ROOT_DIR, ".env.local"),
+    os.path.join(BASE_DIR, ".env"),
+    os.path.join(BASE_DIR, ".env.local"),
+    os.path.join(ROOT_DIR, "interface", ".env"),
+    os.path.join(ROOT_DIR, "interface", ".env.local"),
+]
+
+for _p in _ENV_CANDIDATES:
+    if os.path.isfile(_p):
+        load_dotenv(_p, override=False)
+
+
+def _get_mistral_settings() -> tuple[str | None, str, str]:
+    api_key = os.getenv("MISTRAL_API_KEY")
+    model_name = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
+    system_prompt = os.getenv(
+        "SYSTEM_PROMPT",
+        "Tu es Native AI, un assistant IA utile et bienveillant. Réponds en français, de façon claire et concise.",
+    )
+    return api_key, model_name, system_prompt
+
+
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
-MODEL_NAME = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
-
-SYSTEM_PROMPT = os.getenv(
-    "SYSTEM_PROMPT",
-    "Tu es Native AI, un assistant IA utile et bienveillant. Réponds en français, de façon claire et concise.",
-)
 
 
 app = FastAPI()
@@ -175,7 +191,9 @@ async def chat(
             else:
                 history.append({"role": "user", "content": "Voici les fichiers fournis :\n" + files_block})
 
-    if not MISTRAL_API_KEY:
+    mistral_api_key, model_name, system_prompt = _get_mistral_settings()
+
+    if not mistral_api_key:
         return {"reply": "MISTRAL_API_KEY manquant dans .env (racine)."}
 
     mode_instructions = []
@@ -191,17 +209,17 @@ async def chat(
             "(pas de chaîne de pensée détaillée)."
         )
 
-    mistral_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    mistral_messages = [{"role": "system", "content": system_prompt}]
     if mode_instructions:
         mistral_messages.append({"role": "system", "content": "\n".join(mode_instructions)})
     mistral_messages += history
 
     headers = {
-        "Authorization": f"Bearer {MISTRAL_API_KEY}",
+        "Authorization": f"Bearer {mistral_api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": MODEL_NAME,
+        "model": model_name,
         "messages": mistral_messages,
         "temperature": 0.4,
     }
