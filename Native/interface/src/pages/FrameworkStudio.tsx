@@ -153,6 +153,12 @@ export default function FrameworkStudio({ title, onBack, frameworks, defaultFram
       '{"message":"(court)","files":[{"path":"chemin/nom.ext","content":"contenu du fichier"}]}\n' +
       'Règles: files[].path obligatoire si tu crées un fichier. content = code brut.\n\n';
 
+
+    const perAppSystemPrompt =
+      `Tu es Native AI, un assistant spécialisé dans la génération de resources.\n` +
+      `Contexte: application ${title}, framework ${framework.label}.\n` +
+      `Objectif: proposer une structure propre et du code utilisable.\n` +
+      `Réponds en français, clair et concis.`;
     const nextMessages: StudioMessage[] = [
       ...messages,
       { role: 'user', display: text, api: userApiPrefix + text },
@@ -165,7 +171,7 @@ export default function FrameworkStudio({ title, onBack, frameworks, defaultFram
 
     try {
       const apiMessages: ChatMessage[] = nextMessages.map((m) => ({ role: m.role, content: m.api }));
-      const raw = await sendChat(apiMessages);
+      const raw = await sendChat(apiMessages, { systemPrompt: perAppSystemPrompt });
       const assistant = sanitizeAssistantText(raw);
 
       const jsonText = extractJsonObject(assistant);

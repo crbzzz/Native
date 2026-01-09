@@ -9,12 +9,17 @@ export interface SendChatOptions {
   deepSearch?: boolean;
   reason?: boolean;
   files?: File[];
+  systemPrompt?: string;
   timeoutMs?: number;
 }
 
 export async function sendChat(messages: ChatMessage[], options?: SendChatOptions): Promise<string> {
   const form = new FormData();
   form.append('messages', JSON.stringify(messages));
+
+  if (options?.systemPrompt && options.systemPrompt.trim()) {
+    form.append('system_prompt', options.systemPrompt);
+  }
 
   if (options?.deepSearch) form.append('deep_search', '1');
   if (options?.reason) form.append('reason', '1');

@@ -98,6 +98,7 @@ async def chat(
     messages: str = Form(...),
     deep_search: Optional[str] = Form(None),
     reason: Optional[str] = Form(None),
+    system_prompt: Optional[str] = Form(None),
     files: Optional[List[UploadFile]] = File(None),
 ):
     """Endpoint de chat.
@@ -191,7 +192,13 @@ async def chat(
             else:
                 history.append({"role": "user", "content": "Voici les fichiers fournis :\n" + files_block})
 
-    mistral_api_key, model_name, system_prompt = _get_mistral_settings()
+    mistral_api_key, model_name, default_system_prompt = _get_mistral_settings()
+
+    effective_system_prompt = default_system_prompt
+    if system_prompt is not None:
+        candidate = str(system_prompt).strip()
+        if candidate:
+            effective_system_prompt = candidate
 
     if not mistral_api_key:
         return {"reply": "MISTRAL_API_KEY manquant dans .env (racine)."}
@@ -209,7 +216,7 @@ async def chat(
             "(pas de chaîne de pensée détaillée)."
         )
 
-    mistral_messages = [{"role": "system", "content": system_prompt}]
+    mistral_messages = [{"role": "system", "content": effective_system_prompt}]
     if mode_instructions:
         mistral_messages.append({"role": "system", "content": "\n".join(mode_instructions)})
     mistral_messages += history
