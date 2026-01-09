@@ -18,10 +18,10 @@ export default function Home({ onNewChat, onApps, onLogout }: HomeProps) {
       <div className="max-w-2xl w-full space-y-8">
         <div className="text-center space-y-3 mb-16">
           <h1 className="text-5xl font-light text-gray-900 dark:text-white">
-            Welcome to IA Chat
+            Welcome to Native AI
           </h1>
           <p className="text-lg text-gray-600 dark:text-white/70">
-            Start a new conversation or explore our applications
+            Start a new conversation or explore Native AI apps
           </p>
         </div>
 
@@ -40,7 +40,7 @@ export default function Home({ onNewChat, onApps, onLogout }: HomeProps) {
                   New Chat
                 </h2>
                 <p className="text-gray-600 dark:text-white/70 text-sm text-left mt-2">
-                  Start a fresh conversation with our AI assistant
+                  Start a fresh conversation with Native AI
                 </p>
               </div>
             </div>
@@ -60,7 +60,7 @@ export default function Home({ onNewChat, onApps, onLogout }: HomeProps) {
                   Applications
                 </h2>
                 <p className="text-gray-600 dark:text-white/70 text-sm text-left mt-2">
-                  Explore our available applications and tools
+                  Explore Native AI tools and generators
                 </p>
               </div>
             </div>

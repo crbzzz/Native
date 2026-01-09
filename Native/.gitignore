@@ -14,7 +14,6 @@ dist-ssr/
 
 # Env files (secrets)
 .env
-.env.*
 backend/.env
 interface/.env
 interface/.env.*

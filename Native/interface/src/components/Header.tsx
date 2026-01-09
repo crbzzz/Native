@@ -56,7 +56,7 @@ export default function Header({ onHome }: HeaderProps) {
               >
                 <div className="px-6 pt-5 pb-3 flex items-start justify-between">
                   <div>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Personal settings</p>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Native AI settings</p>
                     <p className="text-xs text-gray-600 dark:text-gray-300">Theme & model</p>
                   </div>
                   <button

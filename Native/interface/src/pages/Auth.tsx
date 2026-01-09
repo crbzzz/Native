@@ -65,7 +65,7 @@ export default function Auth({ onSuccess }: AuthProps) {
         >
           <div className="flex items-center justify-center gap-3 mb-8">
             <Sparkles className="text-gray-900" size={32} />
-            <h1 className="text-3xl font-normal text-gray-900">IA Chat</h1>
+            <h1 className="text-3xl font-normal text-gray-900">Native AI</h1>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">

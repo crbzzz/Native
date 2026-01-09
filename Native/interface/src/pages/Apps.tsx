@@ -66,10 +66,10 @@ export default function Apps({ onBack, onOpenApp }: AppsProps) {
         <div className="max-w-6xl mx-auto">
           <div className="mb-12">
             <h1 className="text-4xl font-normal text-gray-900 dark:text-white mb-3">
-              Applications
+              Applications — Native AI
             </h1>
             <p className="text-gray-600 dark:text-white/70">
-              Explore our available tools and applications
+              Explore Native AI tools and generators
             </p>
           </div>
 

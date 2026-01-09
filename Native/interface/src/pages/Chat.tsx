@@ -441,7 +441,7 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
           {/* Header central (état vide) */}
           {isEmpty && (
             <h1 className="text-4xl font-normal text-gray-900 dark:text-white text-center">
-              What can I help with?
+              What can Native AI help with?
             </h1>
           )}
 
