@@ -216,6 +216,8 @@ function App() {
               user={AUTH_DISABLED ? { id: 'disabled' } : user}
               onBackHome={() => navigate('home')}
               onAppClick={() => navigate('apps')}
+              onOpenFiveM={() => navigate('fivem')}
+              onOpenRedM={() => navigate('redm')}
               onRequireAuth={() => setShowAuth(true)}
             />
           )}

@@ -32,6 +32,8 @@ interface ChatProps {
   user: any;
   onBackHome: () => void;
   onAppClick: () => void;
+  onOpenFiveM?: () => void;
+  onOpenRedM?: () => void;
   onRequireAuth: () => void;
 }
 
@@ -63,7 +65,8 @@ async function generateConversationTitle(seed: { user: string; assistant: string
   return formatTwoWordTitle(raw);
 }
 
-export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: ChatProps) {
+export default function Chat({ user, onBackHome, onAppClick, onOpenFiveM, onOpenRedM, onRequireAuth }: ChatProps) {
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
@@ -488,6 +491,9 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         onNewChat={handleNewChat}
         onApps={onAppClick}
         onHome={onBackHome}
+        onFiveM={onOpenFiveM}
+        onRedM={onOpenRedM}
+        onExpandedChange={setSidebarExpanded}
         conversations={conversations}
         selectedId={selectedId}
         onSelectConversation={handleSelectConversation}
@@ -495,7 +501,10 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
       />
       <Header onHome={onBackHome} />
 
-      <main className="ml-20 pt-16 h-screen flex flex-col p-6 md:p-8">
+      <main
+        className="pt-16 h-screen flex flex-col p-6 md:p-8 transition-[margin-left] duration-200 ease-out"
+        style={{ marginLeft: sidebarExpanded ? '18rem' : '4rem' }}
+      >
         <div
           className={
             "flex-1 min-h-0 w-full max-w-5xl mx-auto flex flex-col transition-all duration-500 ease-in-out " +

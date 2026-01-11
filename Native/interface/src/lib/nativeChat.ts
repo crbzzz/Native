@@ -25,6 +25,11 @@ type ChatApiResponse = {
   conversation?: any;
 };
 
+type TranscribeResponse = {
+  spoken?: string;
+  text?: string;
+};
+
 async function postChat(messages: ChatMessage[], options?: SendChatOptions): Promise<ChatApiResponse> {
   const form = new FormData();
   form.append('messages', JSON.stringify(messages));
@@ -91,4 +96,24 @@ export async function sendChatPersisted(
     conversationId: data.conversationId,
     conversation: data.conversation,
   };
+}
+
+export async function transcribeAudio(file: File): Promise<{ spoken: string; text: string }> {
+  const form = new FormData();
+  form.append('file', file, file.name || 'audio.webm');
+
+  const token = await getAccessToken();
+  const res = await fetch('/api/transcribe', {
+    method: 'POST',
+    body: form,
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+
+  const data = (await res.json()) as TranscribeResponse;
+  return { spoken: data.spoken ?? '', text: data.text ?? '' };
 }

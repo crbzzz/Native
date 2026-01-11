@@ -2,6 +2,7 @@ import os
 import io
 import json
 import datetime
+import base64
 from typing import List, Optional
 
 import httpx
@@ -45,6 +46,9 @@ def _get_mistral_settings() -> tuple[str | None, str, str]:
 
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+
+# Utilisé uniquement pour la transcription micro (ne pas exposer côté UI "model")
+VOXTRAL_TRANSCRIBE_MODEL = os.getenv("VOXTRAL_TRANSCRIBE_MODEL", "voxtral-small-2507")
 
 
 app = FastAPI()
@@ -624,6 +628,158 @@ async def chat(
         if conv_row is not None:
             out["conversation"] = conv_row
     return out
+
+
+def _extract_assistant_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                txt = item.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    parts.append(txt)
+        return "\n".join(parts)
+    return str(content or "")
+
+
+@app.post("/api/transcribe")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+):
+    """Transcrit un audio micro et renvoie du texte (français).
+
+    - Utilise Voxtral via l'endpoint chat/completions (audio input base64)
+    - Ne dépend pas du modèle sélectionné pour le chat (settings)
+    """
+
+    # Auth obligatoire (même logique que /api/chat)
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    month = datetime.datetime.utcnow().strftime("%Y-%m")
+
+    # Limite mensuelle (10k tokens)
+    try:
+        used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": month})
+        used_int = int(used) if used is not None else 0
+    except Exception:
+        used_int = 0
+
+    TOKEN_CAP = 10_000
+    if used_int >= TOKEN_CAP:
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": "token_limit_reached",
+                "detail": f"Limite mensuelle atteinte ({TOKEN_CAP} tokens).",
+            },
+        )
+
+    mistral_api_key, _model_name, _default_system_prompt = _get_mistral_settings()
+    if not mistral_api_key:
+        return JSONResponse(status_code=500, content={"error": "missing_mistral_key"})
+
+    raw = await file.read()
+    if not raw:
+        return JSONResponse(status_code=400, content={"error": "empty_audio"})
+
+    # Basic guardrail (10MB)
+    if len(raw) > 10 * 1024 * 1024:
+        return JSONResponse(status_code=413, content={"error": "audio_too_large"})
+
+    audio_b64 = base64.b64encode(raw).decode("utf-8")
+    instruction = (
+        "Transcris cet audio et renvoie un JSON strict avec deux clés: "
+        "spoken (transcription exacte dans la langue d'origine) et fr (traduction en français). "
+        "Si la langue est déjà le français, fr doit être identique à spoken. "
+        "Réponds uniquement avec le JSON (pas de texte autour, pas de markdown)."
+    )
+
+    headers = {
+        "Authorization": f"Bearer {mistral_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": VOXTRAL_TRANSCRIBE_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_audio", "input_audio": audio_b64},
+                    {"type": "text", "text": instruction},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+    }
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        try:
+            r = await client.post(MISTRAL_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail: object
+            try:
+                detail = exc.response.json()
+            except Exception:
+                detail = exc.response.text
+            return JSONResponse(status_code=502, content={"error": "mistral_api_error", "detail": detail})
+        except httpx.RequestError as exc:
+            return JSONResponse(status_code=502, content={"error": "mistral_request_failed", "detail": str(exc)})
+
+        data = r.json()
+
+    assistant_content = data.get("choices", [{}])[0].get("message", {}).get("content")
+    raw_text = _extract_assistant_text(assistant_content).strip()
+
+    spoken: str | None = None
+    fr: str | None = None
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, dict):
+            s = parsed.get("spoken")
+            t = parsed.get("fr")
+            if isinstance(s, str) and s.strip():
+                spoken = s.strip()
+            if isinstance(t, str) and t.strip():
+                fr = t.strip()
+    except Exception:
+        pass
+
+    # Fallback: si on n'a pas reçu du JSON correct, on renvoie tout dans fr
+    if fr is None:
+        fr = raw_text
+    if spoken is None:
+        spoken = raw_text
+
+    usage = data.get("usage") or {}
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        # fallback approximation (audio is unknown -> minimal)
+        approx_source = fr or raw_text
+        total_tokens = max(1, int(len(approx_source) / 4))
+
+    try:
+        await _supabase_rpc(
+            "add_tokens",
+            {"p_user_id": user_id, "p_month": month, "p_tokens": int(total_tokens)},
+        )
+    except Exception:
+        pass
+
+    return {"spoken": spoken, "text": fr}
 
 
 @app.get("/{full_path:path}", response_class=HTMLResponse)
