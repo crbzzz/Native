@@ -7,7 +7,7 @@ interface Props {
 export default function FiveM({ onBack }: Props) {
   return (
     <FrameworkStudio
-      title="FiveM"
+      title="  " 
       onBack={onBack}
       defaultFrameworkId="esx"
       frameworks={[

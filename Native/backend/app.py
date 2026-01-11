@@ -7,7 +7,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -33,10 +33,11 @@ for _p in _ENV_CANDIDATES:
 def _get_mistral_settings() -> tuple[str | None, str, str]:
     api_key = os.getenv("MISTRAL_API_KEY")
     model_name = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
-    system_prompt = os.getenv(
-        "SYSTEM_PROMPT",
-        "Tu es Native AI, un assistant IA utile et bienveillant. Réponds en français, de façon claire et concise.",
-    )
+    system_prompt = os.getenv("SYSTEM_PROMPT")
+    if not system_prompt or not system_prompt.strip():
+        system_prompt = (
+            "Tu es Native AI, un assistant IA utile et bienveillant. R?ponds en fran?ais, de fa?on claire et concise."
+        )
     return api_key, model_name, system_prompt
 
 
@@ -107,10 +108,16 @@ async def chat(
     - files : fichiers à injecter (optionnel)
     """
 
-    try:
-        history = json.loads(messages)
-    except json.JSONDecodeError:
-        history = []
+    def _normalize_history(raw: str) -> list[dict]:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return [{"role": "user", "content": raw}] if raw.strip() else []
+        if isinstance(parsed, list):
+            return [m for m in parsed if isinstance(m, dict)]
+        return [{"role": "user", "content": raw}] if raw.strip() else []
+
+    history = _normalize_history(messages)
 
     def _as_bool(v: Optional[str]) -> bool:
         if v is None:
@@ -216,6 +223,10 @@ async def chat(
             "(pas de chaîne de pensée détaillée)."
         )
 
+    if not any(str(m.get("content", "")).strip() for m in history if isinstance(m, dict)):
+        if messages.strip():
+            history = [{"role": "user", "content": messages.strip()}]
+
     mistral_messages = [{"role": "system", "content": effective_system_prompt}]
     if mode_instructions:
         mistral_messages.append({"role": "system", "content": "\n".join(mode_instructions)})
@@ -232,8 +243,25 @@ async def chat(
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(MISTRAL_API_URL, headers=headers, json=payload)
-        r.raise_for_status()
+        try:
+            r = await client.post(MISTRAL_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail: object
+            try:
+                detail = exc.response.json()
+            except Exception:
+                detail = exc.response.text
+            return JSONResponse(
+                status_code=502,
+                content={"error": "mistral_api_error", "detail": detail},
+            )
+        except httpx.RequestError as exc:
+            return JSONResponse(
+                status_code=502,
+                content={"error": "mistral_request_failed", "detail": str(exc)},
+            )
+
         data = r.json()
 
     assistant_reply = data["choices"][0]["message"]["content"]
