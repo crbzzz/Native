@@ -24,6 +24,7 @@ create table if not exists public.messages (
 
 alter table public.messages enable row level security;
 
+drop policy if exists "Users can view messages in own conversations" on public.messages;
 create policy "Users can view messages in own conversations"
   on public.messages
   for select
@@ -37,6 +38,7 @@ create policy "Users can view messages in own conversations"
     )
   );
 
+drop policy if exists "Users can create messages in own conversations" on public.messages;
 create policy "Users can create messages in own conversations"
   on public.messages
   for insert
@@ -50,6 +52,7 @@ create policy "Users can create messages in own conversations"
     )
   );
 
+drop policy if exists "Users can delete messages in own conversations" on public.messages;
 create policy "Users can delete messages in own conversations"
   on public.messages
   for delete

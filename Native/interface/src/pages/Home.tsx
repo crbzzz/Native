@@ -1,16 +1,16 @@
 import { signOut } from '../lib/auth';
-import { Plus, Grid, LogOut } from 'lucide-react';
+import { Plus, Grid, LogIn, LogOut } from 'lucide-react';
 
 interface HomeProps {
+  user: any;
   onNewChat: () => void;
   onApps: () => void;
-  onLogout: () => void;
+  onOpenAuth: () => void;
 }
 
-export default function Home({ onNewChat, onApps, onLogout }: HomeProps) {
+export default function Home({ user, onNewChat, onApps, onOpenAuth }: HomeProps) {
   const handleLogout = async () => {
     await signOut();
-    onLogout();
   };
 
   return (
@@ -67,13 +67,25 @@ export default function Home({ onNewChat, onApps, onLogout }: HomeProps) {
           </button>
         </div>
 
-        <button
-          onClick={handleLogout}
-          className="w-full flex items-center justify-center gap-2 py-3 text-gray-700 hover:text-gray-900 dark:text-white/70 dark:hover:text-white transition-colors"
-        >
-          <LogOut size={20} />
-          <span>Sign Out</span>
-        </button>
+        <div className="flex flex-col gap-2">
+          {user ? (
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center justify-center gap-2 py-3 text-gray-700 hover:text-gray-900 dark:text-white/70 dark:hover:text-white transition-colors"
+            >
+              <LogOut size={20} />
+              <span>Sign Out</span>
+            </button>
+          ) : (
+            <button
+              onClick={onOpenAuth}
+              className="w-full flex items-center justify-center gap-2 py-3 text-gray-700 hover:text-gray-900 dark:text-white/70 dark:hover:text-white transition-colors"
+            >
+              <LogIn size={20} />
+              <span>Sign In</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

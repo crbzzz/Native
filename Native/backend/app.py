@@ -1,11 +1,12 @@
 import os
 import io
 import json
+import datetime
 from typing import List, Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +28,9 @@ _ENV_CANDIDATES = [
 
 for _p in _ENV_CANDIDATES:
     if os.path.isfile(_p):
-        load_dotenv(_p, override=False)
+        # Dev-friendly: permet de prendre en compte les changements dans les .env
+        # (sinon une variable déjà présente, même vide, ne serait pas mise à jour).
+        load_dotenv(_p, override=True)
 
 
 def _get_mistral_settings() -> tuple[str | None, str, str]:
@@ -45,6 +48,224 @@ MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 
 
 app = FastAPI()
+
+
+def _get_supabase_settings() -> tuple[str | None, str | None, str | None, list[str]]:
+    url = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
+    anon = os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
+    service = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    admin_emails = [e.strip().lower() for e in (os.getenv("ADMIN_EMAILS") or "").split(",") if e.strip()]
+    return url, anon, service, admin_emails
+
+
+async def _supabase_get_user_id(access_token: str) -> tuple[str, str | None]:
+    supabase_url, supabase_anon_key, _, _ = _get_supabase_settings()
+    if not supabase_url or not supabase_anon_key:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_ANON_KEY manquant")
+
+    endpoint = f"{supabase_url.rstrip('/')}/auth/v1/user"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(
+            endpoint,
+            headers={
+                "apikey": supabase_anon_key,
+                "Authorization": f"Bearer {access_token}",
+            },
+        )
+        if r.status_code >= 400:
+            raise RuntimeError("Token Supabase invalide")
+        data = r.json()
+
+    user_id = str(data.get("id") or "").strip()
+    if not user_id:
+        raise RuntimeError("Utilisateur Supabase introuvable")
+    email = data.get("email")
+    return user_id, (str(email).strip().lower() if email else None)
+
+
+async def _supabase_rpc(name: str, payload: dict) -> object:
+    supabase_url, _, service, _ = _get_supabase_settings()
+    if not supabase_url or not service:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquant")
+
+    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/rpc/{name}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(
+            endpoint,
+            headers={
+                "apikey": service,
+                "Authorization": f"Bearer {service}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase RPC error ({name})")
+        # RPC scalar => JSON scalar, RPC table => array of rows
+        return r.json()
+
+
+async def _supabase_rest_get(table: str, query: str) -> object:
+    supabase_url, _, service, _ = _get_supabase_settings()
+    if not supabase_url or not service:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquant")
+
+    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/{table}?{query}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(
+            endpoint,
+            headers={
+                "apikey": service,
+                "Authorization": f"Bearer {service}",
+            },
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase REST error ({table}): {r.status_code} {r.text}")
+        return r.json()
+
+
+async def _supabase_rest_insert(table: str, payload: object) -> object:
+    supabase_url, _, service, _ = _get_supabase_settings()
+    if not supabase_url or not service:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquant")
+
+    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/{table}"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(
+            endpoint,
+            headers={
+                "apikey": service,
+                "Authorization": f"Bearer {service}",
+                "Content-Type": "application/json",
+                "Prefer": "return=representation",
+            },
+            json=payload,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase REST insert error ({table}): {r.status_code} {r.text}")
+        return r.json()
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+async def conversation_messages(conversation_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    # Vérifie que la conversation appartient à l'utilisateur.
+    try:
+        rows = await _supabase_rest_get(
+            "conversations",
+            f"select=id,user_id&id=eq.{conversation_id}&limit=1",
+        )
+    except Exception:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    conv = (rows[0] if isinstance(rows, list) and rows else None) or {}
+    if str(conv.get("user_id") or "") != str(user_id):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+
+    try:
+        msgs = await _supabase_rest_get(
+            "messages",
+            f"select=id,conversation_id,role,content,attachments,created_at&conversation_id=eq.{conversation_id}&order=created_at.asc",
+        )
+        return msgs if isinstance(msgs, list) else []
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "messages_unavailable", "detail": str(e)})
+
+
+@app.get("/api/usage")
+async def usage(authorization: Optional[str] = Header(None)):
+    """Retourne la consommation tokens du mois pour l'utilisateur courant.
+
+    Réponse: { month, cap, used, remaining }
+    """
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    month = datetime.datetime.utcnow().strftime("%Y-%m")
+    cap = 10_000
+
+    try:
+        used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": month})
+        used_int = int(used) if used is not None else 0
+    except Exception:
+        used_int = 0
+
+    remaining = max(0, cap - used_int)
+    return {"month": month, "cap": cap, "used": used_int, "remaining": remaining}
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        _user_id, email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    _, _, _, admin_emails = _get_supabase_settings()
+    if not email or email.lower() not in set(admin_emails):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+
+    # Connected users: last_seen within 120s
+    connected_users = 0
+    try:
+        rows = await _supabase_rest_get("user_presence", "select=last_seen")
+        now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+        cutoff = now - datetime.timedelta(seconds=120)
+        for r in rows if isinstance(rows, list) else []:
+            try:
+                ls = str((r or {}).get("last_seen") or "")
+                if not ls:
+                    continue
+                dt = datetime.datetime.fromisoformat(ls.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                if dt >= cutoff:
+                    connected_users += 1
+            except Exception:
+                continue
+    except Exception:
+        connected_users = 0
+
+    # Total users
+    total_users = 0
+    try:
+        total = await _supabase_rpc("admin_total_users", {})
+        total_users = int(total) if total is not None else 0
+    except Exception:
+        total_users = 0
+
+    # Tokens monthly series
+    tokens_by_month = []
+    try:
+        series = await _supabase_rpc("admin_tokens_last_months", {"p_months": 6})
+        tokens_by_month = series if isinstance(series, list) else []
+    except Exception:
+        tokens_by_month = []
+
+    return {
+        "connectedUsers": connected_users,
+        "totalUsers": total_users,
+        "tokensByMonth": tokens_by_month,
+    }
 
 # CORS (utile si l'interface Vite tourne sur un autre port en dev)
 app.add_middleware(
@@ -97,10 +318,15 @@ async def home():
 @app.post("/api/chat")
 async def chat(
     messages: str = Form(...),
+    persist: Optional[str] = Form(None),
+    conversation_id: Optional[str] = Form(None),
+    conversation_title: Optional[str] = Form(None),
+    attachments: Optional[str] = Form(None),
     deep_search: Optional[str] = Form(None),
     reason: Optional[str] = Form(None),
     system_prompt: Optional[str] = Form(None),
     files: Optional[List[UploadFile]] = File(None),
+    authorization: Optional[str] = Header(None),
 ):
     """Endpoint de chat.
 
@@ -119,13 +345,99 @@ async def chat(
 
     history = _normalize_history(messages)
 
+    # Auth obligatoire pour l'envoi (la navigation reste libre côté UI)
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    month = datetime.datetime.utcnow().strftime("%Y-%m")
+
+    # Limite mensuelle (10k tokens)
+    try:
+        used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": month})
+        used_int = int(used) if used is not None else 0
+    except Exception:
+        used_int = 0
+
+    TOKEN_CAP = 10_000
+    if used_int >= TOKEN_CAP:
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": "token_limit_reached",
+                "detail": f"Limite mensuelle atteinte ({TOKEN_CAP} tokens).",
+            },
+        )
+
     def _as_bool(v: Optional[str]) -> bool:
         if v is None:
             return False
         return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
+    persist_enabled = _as_bool(persist)
+
     deep_search_enabled = _as_bool(deep_search)
     reason_enabled = _as_bool(reason)
+
+    async def _ensure_conversation() -> tuple[str | None, dict | None]:
+        """Retourne (conversation_id, conversation_row) ou (None, None)."""
+        nonlocal conversation_id
+
+        if not persist_enabled:
+            return None, None
+
+        if conversation_id:
+            # Vérifie appartenance
+            try:
+                rows = await _supabase_rest_get(
+                    "conversations",
+                    f"select=id,user_id,title,created_at,updated_at&id=eq.{conversation_id}&limit=1",
+                )
+                row = rows[0] if isinstance(rows, list) and rows else None
+                if not row or str(row.get("user_id") or "") != str(user_id):
+                    return None, None
+                return str(row.get("id")), row
+            except Exception:
+                return None, None
+
+        title = (conversation_title or "").strip() or "New Conversation"
+        try:
+            created = await _supabase_rest_insert("conversations", {"user_id": user_id, "title": title})
+            # Supabase REST renvoie un array de lignes
+            row = created[0] if isinstance(created, list) and created else None
+            if not row:
+                return None, None
+            conversation_id = str(row.get("id"))
+            return conversation_id, row
+        except Exception:
+            return None, None
+
+    def _extract_last_user_message() -> str:
+        for m in reversed(history):
+            if not isinstance(m, dict):
+                continue
+            if str(m.get("role") or "") != "user":
+                continue
+            content = str(m.get("content") or "").strip()
+            if content:
+                return content
+        return ""
+
+    def _parse_attachments() -> object | None:
+        if not attachments:
+            return None
+        try:
+            parsed = json.loads(attachments)
+        except Exception:
+            return None
+        if isinstance(parsed, list):
+            return parsed
+        return None
 
     def _limit_text(s: str, max_chars: int = 8000) -> str:
         if len(s) <= max_chars:
@@ -265,7 +577,53 @@ async def chat(
         data = r.json()
 
     assistant_reply = data["choices"][0]["message"]["content"]
-    return {"reply": assistant_reply}
+
+    # Persistance DB (optionnelle) : on stocke uniquement le dernier message user + la réponse.
+    conv_id, conv_row = await _ensure_conversation()
+    if persist_enabled and conv_id:
+        user_msg = _extract_last_user_message()
+        att = _parse_attachments()
+        if user_msg:
+            try:
+                payload_u: dict = {"conversation_id": conv_id, "role": "user", "content": user_msg}
+                if att is not None:
+                    payload_u["attachments"] = att
+                await _supabase_rest_insert("messages", payload_u)
+            except Exception:
+                pass
+
+        try:
+            await _supabase_rest_insert(
+                "messages",
+                {"conversation_id": conv_id, "role": "assistant", "content": str(assistant_reply or "")},
+            )
+        except Exception:
+            pass
+
+    # Comptage tokens (Mistral fournit souvent usage.total_tokens)
+    usage = data.get("usage") or {}
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        # fallback: approximation simple (chars/4)
+        approx_chars = sum(len(str(m.get("content", ""))) for m in mistral_messages if isinstance(m, dict))
+        approx_chars += len(str(assistant_reply or ""))
+        total_tokens = max(1, int(approx_chars / 4))
+
+    try:
+        added = await _supabase_rpc(
+            "add_tokens",
+            {"p_user_id": user_id, "p_month": month, "p_tokens": int(total_tokens)},
+        )
+        new_total = int(added) if added is not None else None
+    except Exception:
+        new_total = None
+
+    out: dict = {"reply": assistant_reply}
+    if persist_enabled and conv_id:
+        out["conversationId"] = conv_id
+        if conv_row is not None:
+            out["conversation"] = conv_row
+    return out
 
 
 @app.get("/{full_path:path}", response_class=HTMLResponse)

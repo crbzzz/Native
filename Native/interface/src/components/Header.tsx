@@ -1,7 +1,7 @@
 import { Check, ChevronsUpDown, LogOut, Moon, Sun, User, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { signOut } from '../lib/auth';
+import { getAccessToken, signOut } from '../lib/auth';
 import { getStoredTheme, setTheme, type ThemeMode } from '../lib/theme';
 import { getSfxEnabled, setSfxEnabled } from '../lib/sfx';
 
@@ -13,6 +13,8 @@ export default function Header({ onHome }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setThemeState] = useState<ThemeMode>('light');
   const [sfxEnabled, setSfxEnabledState] = useState(true);
+  const [quota, setQuota] = useState<{ month: string; cap: number; used: number; remaining: number } | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
 
   const modelOptions = useMemo(() => [{ id: 'mistral-small-latest', label: 'mistral-small-latest' }], []);
   const [model, setModel] = useState(modelOptions[0]?.id ?? 'mistral-small-latest');
@@ -21,6 +23,36 @@ export default function Header({ onHome }: HeaderProps) {
     setThemeState(getStoredTheme());
     setSfxEnabledState(getSfxEnabled());
   }, []);
+
+  useEffect(() => {
+    const run = async () => {
+      if (!menuOpen) return;
+      setQuotaError(null);
+
+      const token = await getAccessToken();
+      if (!token) {
+        setQuota(null);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/usage', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as { month: string; cap: number; used: number; remaining: number };
+        setQuota(data);
+      } catch (e) {
+        setQuota(null);
+        setQuotaError(e instanceof Error ? e.message : String(e));
+      }
+    };
+
+    void run();
+  }, [menuOpen]);
 
   const handleLogout = async () => {
     await signOut();
@@ -113,6 +145,32 @@ export default function Header({ onHome }: HeaderProps) {
                           ))}
                         </select>
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="w-full px-4 py-2.5 rounded-2xl border border-white/45 dark:border-white/15 bg-white/25 dark:bg-white/10">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm text-gray-900 dark:text-gray-100">Tokens restants</p>
+                        <p className="text-xs text-gray-600 dark:text-gray-300">
+                          {quota
+                            ? `${quota.remaining} / ${quota.cap} (mois ${quota.month})`
+                            : quotaError
+                              ? 'Impossible de charger la quota'
+                              : 'Connecte-toi pour voir ta quota'}
+                        </p>
+                      </div>
+
+                      {quota && (
+                        <div className="w-32">
+                          <div className="h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-black/60 dark:bg-white/70"
+                              style={{ width: `${Math.max(0, Math.min(100, (quota.used / Math.max(1, quota.cap)) * 100))}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 

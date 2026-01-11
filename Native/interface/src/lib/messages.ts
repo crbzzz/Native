@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { getAccessToken } from './auth';
 
 export type MessageRole = 'user' | 'assistant';
 
@@ -12,13 +12,17 @@ export interface DbMessage {
 }
 
 export async function getMessages(conversationId: string): Promise<DbMessage[]> {
-  const { data, error } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: true });
+  const token = await getAccessToken();
+  if (!token) throw new Error('auth_required');
 
-  if (error) throw error;
+  const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(txt || `HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as DbMessage[];
   return data ?? [];
 }
 
@@ -28,30 +32,14 @@ export async function addMessage(
   content: string,
   attachments?: Array<{ name: string; type: string; size: number }>
 ): Promise<DbMessage> {
-  const insertPayload: Record<string, unknown> = {
+  // Déprécié: les messages sont persistés par le backend (/api/chat).
+  // On garde la signature pour compatibilité, mais on ne l'utilise plus.
+  return {
+    id: crypto.randomUUID(),
     conversation_id: conversationId,
     role,
     content,
+    attachments: attachments ?? null,
+    created_at: new Date().toISOString(),
   };
-  if (attachments && attachments.length) insertPayload.attachments = attachments;
-
-  const attempt = async (payload: Record<string, unknown>) =>
-    supabase.from('messages').insert(payload).select().single();
-
-  const { data, error } = await attempt(insertPayload);
-  if (!error) return data as DbMessage;
-
-  // Backward compatible: if the migration adding `attachments` hasn't been applied yet.
-  const msg = String((error as any)?.message ?? '');
-  if (msg.toLowerCase().includes('attachments') && msg.toLowerCase().includes('column')) {
-    const { data: data2, error: error2 } = await attempt({
-      conversation_id: conversationId,
-      role,
-      content,
-    });
-    if (error2) throw error2;
-    return data2 as DbMessage;
-  }
-
-  throw error;
 }

@@ -18,9 +18,21 @@ export async function signOut() {
   return await supabase.auth.signOut();
 }
 
+export async function signInWithGoogle(redirectTo?: string) {
+  return await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: redirectTo ? { redirectTo } : undefined,
+  });
+}
+
 export async function getCurrentUser() {
   const { data: { user } } = await supabase.auth.getUser();
   return user;
+}
+
+export async function getAccessToken(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? null;
 }
 
 export function onAuthStateChange(callback: (user: any) => void) {
