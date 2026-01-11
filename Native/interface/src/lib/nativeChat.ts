@@ -1,3 +1,5 @@
+import { getAccessToken } from './auth';
+
 export type ChatRole = 'user' | 'assistant';
 
 export interface ChatMessage {
@@ -10,10 +12,20 @@ export interface SendChatOptions {
   reason?: boolean;
   files?: File[];
   systemPrompt?: string;
+  persist?: boolean;
+  conversationId?: string;
+  conversationTitle?: string;
+  attachments?: Array<{ name: string; type: string; size: number }>;
   timeoutMs?: number;
 }
 
-export async function sendChat(messages: ChatMessage[], options?: SendChatOptions): Promise<string> {
+type ChatApiResponse = {
+  reply?: string;
+  conversationId?: string;
+  conversation?: any;
+};
+
+async function postChat(messages: ChatMessage[], options?: SendChatOptions): Promise<ChatApiResponse> {
   const form = new FormData();
   form.append('messages', JSON.stringify(messages));
 
@@ -23,6 +35,12 @@ export async function sendChat(messages: ChatMessage[], options?: SendChatOption
 
   if (options?.deepSearch) form.append('deep_search', '1');
   if (options?.reason) form.append('reason', '1');
+  if (options?.persist) form.append('persist', '1');
+  if (options?.conversationId) form.append('conversation_id', options.conversationId);
+  if (options?.conversationTitle) form.append('conversation_title', options.conversationTitle);
+  if (options?.attachments && options.attachments.length) {
+    form.append('attachments', JSON.stringify(options.attachments));
+  }
   for (const f of options?.files ?? []) {
     form.append('files', f, f.name);
   }
@@ -33,9 +51,11 @@ export async function sendChat(messages: ChatMessage[], options?: SendChatOption
 
   let res: Response;
   try {
+    const token = await getAccessToken();
     res = await fetch('/api/chat', {
       method: 'POST',
       body: form,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       signal: controller.signal,
     });
   } catch (e) {
@@ -53,6 +73,22 @@ export async function sendChat(messages: ChatMessage[], options?: SendChatOption
     throw new Error(text || `HTTP ${res.status}`);
   }
 
-  const data = (await res.json()) as { reply?: string };
+  return (await res.json()) as ChatApiResponse;
+}
+
+export async function sendChat(messages: ChatMessage[], options?: SendChatOptions): Promise<string> {
+  const data = await postChat(messages, { ...options, persist: Boolean(options?.persist) });
   return data.reply ?? '';
+}
+
+export async function sendChatPersisted(
+  messages: ChatMessage[],
+  options?: Omit<SendChatOptions, 'persist'>
+): Promise<{ reply: string; conversationId?: string; conversation?: any }> {
+  const data = await postChat(messages, { ...options, persist: true });
+  return {
+    reply: data.reply ?? '',
+    conversationId: data.conversationId,
+    conversation: data.conversation,
+  };
 }

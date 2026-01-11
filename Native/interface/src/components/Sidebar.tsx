@@ -42,7 +42,10 @@ export default function Sidebar({
           <MessageSquare size={20} />
         </button>
         <button
-          onClick={onNewChat}
+          onClick={() => {
+            setExpanded(false);
+            onNewChat();
+          }}
           className="w-10 h-10 flex items-center justify-center bg-black text-white rounded-lg hover:bg-gray-800 dark:bg-white/12 dark:text-white dark:border dark:border-white/15 dark:hover:bg-white/16 transition-colors"
           title="New Chat"
         >
@@ -73,6 +76,7 @@ export default function Sidebar({
                   }`}
                   onClick={() => {
                     onSelectConversation?.(conv.id);
+                    setExpanded(false);
                   }}
                 >
                   <span className="text-sm text-gray-900 dark:text-white truncate flex-1">

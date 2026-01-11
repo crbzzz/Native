@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  createConversation,
   getConversations,
   deleteConversation,
   updateConversationTitle,
@@ -9,11 +8,13 @@ import Sidebar from '../components/Sidebar';
 import Header from '../components/Header';
 import ChatInput from '../components/ChatInput';
 import Footer from '../components/Footer';
-import { sendChat, type ChatMessage } from '../lib/nativeChat';
+import { sendChat, sendChatPersisted, type ChatMessage } from '../lib/nativeChat';
 import MessageContent from '../components/MessageContent';
 import { sanitizeAssistantText } from '../lib/sanitizeAssistantText';
-import { addMessage, getMessages, type MessageRole } from '../lib/messages';
+import { getMessages } from '../lib/messages';
 import { getSfxEnabled } from '../lib/sfx';
+import { getCurrentUser } from '../lib/auth';
+import { getAccessToken } from '../lib/auth';
 
 // Son joué quand la réponse de l'IA est terminée
 // (le fichier est dans interface/sounds)
@@ -28,8 +29,10 @@ interface Conversation {
 }
 
 interface ChatProps {
+  user: any;
   onBackHome: () => void;
   onAppClick: () => void;
+  onRequireAuth: () => void;
 }
 
 type AttachmentMeta = { name: string; type: string; size: number };
@@ -56,14 +59,16 @@ async function generateConversationTitle(seed: { user: string; assistant: string
     'Réponds uniquement avec ces 2 mots (pas de ponctuation, pas de phrase).\n\n' +
     `USER: ${seed.user}\nASSISTANT: ${seed.assistant}`;
 
-  const raw = await sendChat([{ role: 'user', content: prompt }]);
+  const raw = await sendChat([{ role: 'user', content: prompt }], { persist: false });
   return formatTwoWordTitle(raw);
 }
 
-export default function Chat({ onBackHome, onAppClick }: ChatProps) {
+export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: ChatProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectionNonce, setSelectionNonce] = useState(0);
   const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [messagesLoadError, setMessagesLoadError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -71,6 +76,7 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
   const [deepSearch, setDeepSearch] = useState(false);
   const [reason, setReason] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [authRequired, setAuthRequired] = useState(false);
 
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
@@ -79,6 +85,7 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
 
   const typingTimerRef = useRef<number | null>(null);
   const sendingWatchdogRef = useRef<number | null>(null);
+  const skipNextLoadMessagesRef = useRef(false);
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -98,18 +105,29 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
 
   useEffect(() => {
     loadConversations();
-  }, []);
+  }, [user]);
+
+  useEffect(() => {
+    if (user && authRequired) setAuthRequired(false);
+  }, [user, authRequired]);
 
   // Charge les messages lorsqu'on sélectionne une conversation
   useEffect(() => {
     const run = async () => {
       if (!selectedId) {
         setMessages([]);
+        setMessagesLoadError(null);
+        return;
+      }
+
+      if (skipNextLoadMessagesRef.current) {
+        skipNextLoadMessagesRef.current = false;
         return;
       }
 
       try {
         setLoadingMessages(true);
+        setMessagesLoadError(null);
         const rows = await getMessages(selectedId);
         setMessages(
           rows.map((r) => ({
@@ -119,7 +137,13 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
           }))
         );
       } catch (e) {
-        // Si la table messages n'existe pas encore, on n'empêche pas l'app de tourner.
+        const msg = e instanceof Error ? e.message : String(e);
+        const normalized = String(msg || '').toLowerCase();
+        if (normalized.includes('auth_required') || normalized.includes('invalid_auth') || normalized.includes('401')) {
+          setAuthRequired(true);
+          onRequireAuth();
+        }
+        setMessagesLoadError(msg || 'Impossible de charger les messages');
         setMessages([]);
       } finally {
         setLoadingMessages(false);
@@ -129,7 +153,16 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
       }
     };
     run();
-  }, [selectedId]);
+  }, [selectedId, selectionNonce]);
+
+  const handleSelectConversation = (id: string) => {
+    if (id === selectedId) {
+      // React ignore setSelectedId(sameValue). On force un re-load des messages.
+      setSelectionNonce((n) => n + 1);
+      return;
+    }
+    setSelectedId(id);
+  };
 
   // Scroll auto en bas quand les messages changent
   useEffect(() => {
@@ -193,14 +226,11 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
   };
 
   const handleNewChat = async () => {
-    try {
-      const newConversation = await createConversation('New Conversation');
-      setConversations([newConversation, ...conversations]);
-      setSelectedId(newConversation.id);
-      setPendingFiles([]);
-    } catch (error) {
-      console.error('Failed to create conversation:', error);
-    }
+    // Création lazy: la conversation est créée en DB au 1er message.
+    setSelectedId(null);
+    setMessages([]);
+    setPendingFiles([]);
+    setMessagesLoadError(null);
   };
 
   const handleDelete = async (id: string) => {
@@ -236,6 +266,9 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
   };
 
   const isEmpty = messages.length === 0;
+  const hasSelectedConversation = Boolean(selectedId);
+  const showThread = !isEmpty || loadingMessages;
+  const emptyTitle = hasSelectedConversation ? 'Conversation vide' : 'What can Native AI help with?';
 
   const scrollerFadeStyle = useMemo(() => {
     const fadePx = 44;
@@ -295,7 +328,16 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
 
       if (i >= text.length) {
         clearTypingTimer();
-        void onDone();
+        Promise.resolve()
+          .then(() => onDone())
+          .catch(() => {
+            if (sendingWatchdogRef.current) {
+              window.clearTimeout(sendingWatchdogRef.current);
+              sendingWatchdogRef.current = null;
+            }
+            setThinking(false);
+            setSending(false);
+          });
       }
     }, intervalMs);
   };
@@ -303,6 +345,19 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || sending) return;
+
+    // Si l'état React n'est pas encore à jour, on re-check côté Supabase.
+    const token = await getAccessToken();
+    if (!token) {
+      setAuthRequired(true);
+      onRequireAuth();
+      return;
+    }
+
+    if (!user) {
+      // best-effort: éviter un état "connecté" sans user côté React
+      await getCurrentUser().catch(() => null);
+    }
 
     playSendSound();
 
@@ -336,62 +391,52 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
       ? conversations.find((c) => c.id === selectedId)?.title
       : undefined;
 
-    let conversationId = selectedId;
-    let createdConversationWasNew = false;
-    if (!conversationId) {
-      try {
-        const newConversation = await createConversation('New Conversation');
-        setConversations((prev) => [newConversation, ...prev]);
-        setSelectedId(newConversation.id);
-        conversationId = newConversation.id;
-        createdConversationWasNew = true;
-      } catch (e) {
-        // Si on ne peut pas créer la conversation (pas connecté), on continue en mode non persisté.
-      }
-    }
+    const conversationId = selectedId;
 
     setMessages((prev) => [...prev, { role: 'user', content: text, attachments }]);
 
     const nextHistory: ChatMessage[] = [...messages.map((m) => ({ role: m.role, content: m.content })), { role: 'user', content: text }];
 
-    if (conversationId) {
-      try {
-        await addMessage(conversationId, 'user' satisfies MessageRole, text, attachments);
-      } catch (_) {
-        // ignore si DB pas prête
-      }
-    }
-
     try {
-      const rawReply = await sendChat(nextHistory, {
+      const resp = await sendChatPersisted(nextHistory, {
+        conversationId: conversationId ?? undefined,
+        conversationTitle: 'New Conversation',
+        attachments,
         deepSearch,
         reason,
         files: filesToSend,
       });
-      const reply = sanitizeAssistantText(rawReply);
+      const reply = sanitizeAssistantText(resp.reply);
+
+      const resolvedConversationId = conversationId ?? resp.conversationId ?? null;
+
+      // Si c'est une nouvelle conversation, on l'ajoute à la liste et on la sélectionne.
+      if (!selectedId && resp.conversationId) {
+        skipNextLoadMessagesRef.current = true;
+        setSelectedId(resp.conversationId);
+        if (resp.conversation && typeof resp.conversation === 'object') {
+          setConversations((prev) => [resp.conversation as any, ...prev]);
+        } else {
+          setConversations((prev) => [{ id: resp.conversationId, title: 'New Conversation' } as any, ...prev]);
+        }
+      }
 
       setThinking(false);
 
       // Ajoute un message assistant vide puis le remplit petit à petit
       setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
 
-      const shouldAutoTitle = Boolean(conversationId) && hadNoMessages && (createdConversationWasNew || currentConversationTitle === 'New Conversation');
+      const shouldAutoTitle = Boolean(resolvedConversationId) && hadNoMessages && (!currentConversationTitle || currentConversationTitle === 'New Conversation');
 
       await animateAssistantTyping(reply, async () => {
         playBotDoneSound();
 
-        if (conversationId) {
-          try {
-            await addMessage(conversationId, 'assistant' satisfies MessageRole, reply);
-          } catch (_) {
-            // ignore si DB pas prête
-          }
-        }
+        // La persistance user+assistant est faite côté backend.
 
-        if (conversationId && shouldAutoTitle) {
+        if (resolvedConversationId && shouldAutoTitle) {
           try {
             const title = await generateConversationTitle({ user: text, assistant: reply });
-            const updated = await updateConversationTitle(conversationId, title);
+            const updated = await updateConversationTitle(resolvedConversationId, title);
             setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
           } catch (_) {
             // ignore
@@ -406,7 +451,16 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to contact server';
-      setMessages((prev) => [...prev, { role: 'assistant', content: msg }]);
+
+      const normalized = String(msg || '').toLowerCase();
+      if (normalized.includes('auth_required') || normalized.includes('invalid_auth') || normalized.includes('401')) {
+        // Annule l'envoi et demande la connexion, sans polluer le chat.
+        setAuthRequired(true);
+        onRequireAuth();
+        setMessages((prev) => prev); // no-op
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', content: msg }]);
+      }
       setThinking(false);
       setSending(false);
       if (sendingWatchdogRef.current) {
@@ -420,13 +474,23 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
 
   return (
     <div className="min-h-screen bg-transparent">
+      {authRequired && (
+        <div className="fixed left-1/2 top-6 -translate-x-1/2 z-[60] rounded-2xl border border-white/45 bg-white/35 backdrop-blur-md px-4 py-2 text-sm text-gray-900 dark:text-white dark:bg-white/10">
+          Connexion requise pour envoyer un message.
+        </div>
+      )}
+      {messagesLoadError && (
+        <div className="fixed left-1/2 top-[4.5rem] -translate-x-1/2 z-[60] max-w-[92vw] rounded-2xl border border-white/45 bg-white/35 backdrop-blur-md px-4 py-2 text-sm text-gray-900 dark:text-white dark:bg-white/10">
+          Impossible de charger l'historique: {messagesLoadError}
+        </div>
+      )}
       <Sidebar
         onNewChat={handleNewChat}
         onApps={onAppClick}
         onHome={onBackHome}
         conversations={conversations}
         selectedId={selectedId}
-        onSelectConversation={setSelectedId}
+        onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDelete}
       />
       <Header onHome={onBackHome} />
@@ -435,18 +499,18 @@ export default function Chat({ onBackHome, onAppClick }: ChatProps) {
         <div
           className={
             "flex-1 min-h-0 w-full max-w-5xl mx-auto flex flex-col transition-all duration-500 ease-in-out " +
-            (isEmpty ? 'justify-center gap-10' : 'gap-4')
+            (!showThread ? 'justify-center gap-10' : 'gap-4')
           }
         >
           {/* Header central (état vide) */}
-          {isEmpty && (
+          {!showThread && (
             <h1 className="text-4xl font-normal text-gray-900 dark:text-white text-center">
-              What can Native AI help with?
+              {emptyTitle}
             </h1>
           )}
 
           {/* Messages (sans box de fond: même fond que la page) */}
-          {!isEmpty && (
+          {showThread && (
             <div className="relative flex-1 min-h-0 w-full mt-8">
               <div
                 ref={scrollerRef}

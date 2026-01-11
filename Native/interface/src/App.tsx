@@ -5,46 +5,130 @@ import Chat from './pages/Chat';
 import Apps from './pages/Apps';
 import RedM from './pages/RedM';
 import FiveM from './pages/FiveM';
+import Admin from './pages/Admin';
 import { onAuthStateChange } from './lib/auth';
 import { applyTheme, getStoredTheme } from './lib/theme';
+import { supabase } from './lib/supabase';
 
-const AUTH_DISABLED = true;
+const AUTH_DISABLED = false;
 
 type AppKey = 'redm' | 'fivem';
 
-type PageType = 'auth' | 'home' | 'chat' | 'apps' | AppKey;
+type PageType = 'home' | 'chat' | 'apps' | 'admin' | 'admin_login' | AppKey;
+
+function pageFromPath(pathname: string): PageType {
+  const p = (pathname || '/').toLowerCase();
+  if (p === '/admin/login') return 'admin_login';
+  if (p === '/admin') return 'admin';
+  if (p === '/chat') return 'chat';
+  if (p === '/apps') return 'apps';
+  if (p === '/redm') return 'redm';
+  if (p === '/fivem') return 'fivem';
+  return 'home';
+}
+
+function pathFromPage(page: PageType): string {
+  if (page === 'admin_login') return '/admin/login';
+  if (page === 'admin') return '/admin';
+  if (page === 'chat') return '/chat';
+  if (page === 'apps') return '/apps';
+  if (page === 'redm') return '/redm';
+  if (page === 'fivem') return '/fivem';
+  return '/';
+}
 
 function App() {
-  const [currentPage, setCurrentPage] = useState<PageType>('auth');
+  const [currentPage, setCurrentPage] = useState<PageType>(() => pageFromPath(window.location.pathname));
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [showAuth, setShowAuth] = useState(false);
 
   const bgRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const targetRef = useRef({ x: 0, y: 0 });
   const currentRef = useRef({ x: 0, y: 0 });
 
+  const navigate = (page: PageType) => {
+    setCurrentPage(page);
+    const next = pathFromPage(page);
+    if (window.location.pathname !== next) {
+      window.history.pushState({}, '', next);
+    }
+  };
+
+  const replacePath = (path: string) => {
+    const nextPage = pageFromPath(path);
+    setCurrentPage(nextPage);
+    if (window.location.pathname !== path) {
+      window.history.replaceState({}, '', path);
+    }
+  };
+
   useEffect(() => {
     applyTheme(getStoredTheme());
 
     if (AUTH_DISABLED) {
       setLoading(false);
-      setCurrentPage('home');
       return;
     }
 
     const unsubscribe = onAuthStateChange((authUser) => {
       setUser(authUser);
       setLoading(false);
+
+      // Post-OAuth redirect (Google): ramène direct vers /chat ou /admin.
       if (authUser) {
-        setCurrentPage('home');
-      } else {
-        setCurrentPage('auth');
+        const pending = window.localStorage.getItem('native_post_auth_path');
+        if (pending === '/chat' || pending === '/admin') {
+          window.localStorage.removeItem('native_post_auth_path');
+          if (window.location.pathname !== pending) {
+            replacePath(pending);
+          }
+        }
       }
     });
 
     return () => unsubscribe?.data?.subscription?.unsubscribe?.();
   }, []);
+
+  useEffect(() => {
+    const onPop = () => setCurrentPage(pageFromPath(window.location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  useEffect(() => {
+    if (AUTH_DISABLED) return;
+    if (currentPage === 'admin' && !user) {
+      navigate('admin_login');
+    }
+  }, [currentPage, user]);
+
+  // Presence (utilisateurs "connectés")
+  useEffect(() => {
+    if (AUTH_DISABLED) return;
+    if (!user) return;
+
+    let stopped = false;
+    const ping = async () => {
+      if (stopped) return;
+      try {
+        await supabase.from('user_presence').upsert({
+          user_id: user.id,
+          last_seen: new Date().toISOString(),
+        });
+      } catch (_) {
+        // ignore (table/policies pas encore en place)
+      }
+    };
+
+    void ping();
+    const id = window.setInterval(ping, 30000);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [user]);
 
   // Parallax léger sur le wallpaper (desktop/pointer only)
   useEffect(() => {
@@ -118,37 +202,67 @@ function App() {
       </div>
 
       <div className="relative z-10 min-h-screen">
-        {AUTH_DISABLED || user ? (
-          <>
-            {currentPage === 'home' && (
-              <Home
-                onNewChat={() => setCurrentPage('chat')}
-                onApps={() => setCurrentPage('apps')}
-                onLogout={() => setCurrentPage('auth')}
-              />
-            )}
-            {currentPage === 'chat' && (
-              <Chat
-                onBackHome={() => setCurrentPage('home')}
-                onAppClick={() => setCurrentPage('apps')}
-              />
-            )}
-            {currentPage === 'apps' && (
-              <Apps
-                onBack={() => setCurrentPage('chat')}
-                onOpenApp={(app: AppKey) => {
-                  if (app === 'redm') setCurrentPage('redm');
-                  if (app === 'fivem') setCurrentPage('fivem');
-                }}
-              />
-            )}
+        <>
+          {currentPage === 'home' && (
+            <Home
+              user={AUTH_DISABLED ? { id: 'disabled' } : user}
+              onNewChat={() => navigate('chat')}
+              onApps={() => navigate('apps')}
+              onOpenAuth={() => setShowAuth(true)}
+            />
+          )}
+          {currentPage === 'chat' && (
+            <Chat
+              user={AUTH_DISABLED ? { id: 'disabled' } : user}
+              onBackHome={() => navigate('home')}
+              onAppClick={() => navigate('apps')}
+              onRequireAuth={() => setShowAuth(true)}
+            />
+          )}
+          {currentPage === 'apps' && (
+            <Apps
+              onBack={() => navigate('chat')}
+              onOpenApp={(app: AppKey) => {
+                if (app === 'redm') navigate('redm');
+                if (app === 'fivem') navigate('fivem');
+              }}
+            />
+          )}
 
-            {currentPage === 'redm' && <RedM onBack={() => setCurrentPage('apps')} />}
-            {currentPage === 'fivem' && <FiveM onBack={() => setCurrentPage('apps')} />}
-          </>
-        ) : (
-          <Auth onSuccess={() => setCurrentPage('home')} />
-        )}
+          {currentPage === 'admin_login' && (
+            <div className="min-h-screen bg-transparent flex items-center justify-center p-6">
+              <div className="w-full max-w-md">
+                <div className="rounded-3xl border border-white/45 bg-white/35 backdrop-blur-md p-6">
+                  <h1 className="text-2xl font-normal text-gray-900 dark:text-white">Admin</h1>
+                  <p className="mt-1 text-sm text-gray-600 dark:text-white/70">Connexion admin requise.</p>
+                </div>
+                <div className="mt-4">
+                  <Auth onSuccess={() => navigate('admin')} variant="embed" />
+                </div>
+                <button
+                  type="button"
+                  className="mt-3 w-full py-2 rounded-xl border border-white/40 bg-white/25 hover:bg-white/35 transition-colors"
+                  onClick={() => navigate('home')}
+                >
+                  Back
+                </button>
+              </div>
+            </div>
+          )}
+
+          {currentPage === 'admin' && (user ? <Admin /> : null)}
+
+          {currentPage === 'redm' && <RedM onBack={() => navigate('apps')} />}
+          {currentPage === 'fivem' && <FiveM onBack={() => navigate('apps')} />}
+
+          {showAuth && !AUTH_DISABLED && (
+            <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/40 p-4">
+              <div className="w-full max-w-md">
+                <Auth onSuccess={() => setShowAuth(false)} onClose={() => setShowAuth(false)} variant="embed" />
+              </div>
+            </div>
+          )}
+        </>
       </div>
     </div>
   );
