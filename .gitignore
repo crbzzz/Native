@@ -1,2 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtualenv
+venv/
+.venv/
+
+# Node
 node_modules/
+dist/
+dist-ssr/
+
+# Env files (secrets)
 .env
+backend/.env
+interface/.env
+interface/.env.*
+
+# Logs
+*.log
+logs/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

@@ -2,7 +2,16 @@ import os
 import io
 import json
 import datetime
+import base64
+import tempfile
+import subprocess
+import traceback
 from typing import List, Optional
+
+try:
+    import imageio_ffmpeg  # type: ignore
+except Exception:  # pragma: no cover
+    imageio_ffmpeg = None
 
 import httpx
 from dotenv import load_dotenv
@@ -45,6 +54,22 @@ def _get_mistral_settings() -> tuple[str | None, str, str]:
 
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+
+# Dedicated transcription endpoint (recommended for STT)
+MISTRAL_AUDIO_TRANSCRIPTIONS_URL = "https://api.mistral.ai/v1/audio/transcriptions"
+
+# Voxtral STT model (server-only). Keep this out of any frontend settings.
+# Default requested by the project: voxtral-small-2507
+VOXTRAL_TRANSCRIBE_MODEL = os.getenv("VOXTRAL_TRANSCRIBE_MODEL", "voxtral-small-2507")
+
+# Optional override to force a specific method.
+# - "transcriptions": use /v1/audio/transcriptions
+# - "chat": use /v1/chat/completions with input_audio
+# - "auto": choose based on model name
+VOXTRAL_TRANSCRIBE_ENDPOINT = os.getenv("VOXTRAL_TRANSCRIBE_ENDPOINT", "auto").strip().lower() or "auto"
+
+# Text model used only to translate STT output to French.
+VOXTRAL_TRANSLATE_MODEL = os.getenv("VOXTRAL_TRANSLATE_MODEL", "mistral-small-latest")
 
 
 app = FastAPI()
@@ -624,6 +649,448 @@ async def chat(
         if conv_row is not None:
             out["conversation"] = conv_row
     return out
+
+
+def _extract_assistant_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                txt = item.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    parts.append(txt)
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _looks_like_supported_audio(filename: str | None, content_type: str | None) -> bool:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in {".mp3", ".wav"}:
+        return True
+    ct = (content_type or "").lower()
+    return ct in {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav"}
+
+
+def _should_use_transcriptions_endpoint(model: str) -> bool:
+    """Heuristic: Mistral's dedicated STT endpoint currently targets Voxtral Mini Transcribe."""
+
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    # Per docs, the optimized endpoint currently supports voxtral-mini-latest.
+    return m.startswith("voxtral-mini")
+
+
+async def _mistral_audio_transcriptions(
+    *,
+    api_key: str,
+    model: str,
+    raw_audio: bytes,
+    filename: str,
+    content_type: str,
+    language: str | None = None,
+) -> tuple[str, dict]:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data: dict[str, str] = {"model": model}
+    if language and language.strip():
+        data["language"] = language.strip()
+
+    files = {
+        # httpx supports raw bytes directly as file content
+        "file": (filename, raw_audio, content_type),
+    }
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        try:
+            r = await client.post(MISTRAL_AUDIO_TRANSCRIPTIONS_URL, headers=headers, data=data, files=files)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail: object
+            try:
+                detail = exc.response.json()
+            except Exception:
+                detail = exc.response.text
+            status = int(getattr(exc.response, "status_code", 502) or 502)
+            if 400 <= status < 500:
+                raise RuntimeError(json.dumps({"error": "mistral_request_rejected", "status": status, "detail": detail}))
+            raise RuntimeError(json.dumps({"error": "mistral_api_error", "status": status, "detail": detail}))
+        except httpx.RequestError as exc:
+            raise RuntimeError(json.dumps({"error": "mistral_request_failed", "detail": str(exc)}))
+
+        try:
+            data_json = r.json()
+        except Exception as exc:
+            raise RuntimeError(json.dumps({"error": "mistral_bad_json", "detail": str(exc), "raw": (r.text or "")[:2000]}))
+
+    # Shape is usually: {"text": "...", ...}
+    if isinstance(data_json, dict):
+        txt = data_json.get("text")
+        if isinstance(txt, str) and txt.strip():
+            return txt.strip(), data_json
+    if isinstance(data_json, str) and data_json.strip():
+        return data_json.strip(), {}
+    raise RuntimeError(json.dumps({"error": "mistral_unexpected_response", "detail": data_json}))
+
+
+async def _mistral_chat_audio_to_json(
+    *,
+    api_key: str,
+    model: str,
+    audio_b64: str,
+) -> tuple[str | None, str | None, dict]:
+    """Legacy method: use chat endpoint with input_audio and JSON response_format."""
+
+    instruction = (
+        "Transcris cet audio et renvoie un JSON strict avec deux clés: "
+        "spoken (transcription exacte dans la langue d'origine) et fr (traduction en français). "
+        "Si la langue est déjà le français, fr doit être identique à spoken. "
+        "Réponds uniquement avec le JSON (pas de texte autour, pas de markdown)."
+    )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_audio", "input_audio": audio_b64},
+                    {"type": "text", "text": instruction},
+                ],
+            }
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.0,
+    }
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        try:
+            r = await client.post(MISTRAL_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail: object
+            try:
+                detail = exc.response.json()
+            except Exception:
+                detail = exc.response.text
+            status = int(getattr(exc.response, "status_code", 502) or 502)
+            if 400 <= status < 500:
+                raise RuntimeError(json.dumps({"error": "mistral_request_rejected", "status": status, "detail": detail}))
+            raise RuntimeError(json.dumps({"error": "mistral_api_error", "status": status, "detail": detail}))
+        except httpx.RequestError as exc:
+            raise RuntimeError(json.dumps({"error": "mistral_request_failed", "detail": str(exc)}))
+
+        try:
+            data = r.json()
+        except Exception as exc:
+            raise RuntimeError(json.dumps({"error": "mistral_bad_json", "detail": str(exc), "raw": (r.text or "")[:2000]}))
+
+    if not isinstance(data, dict):
+        raise RuntimeError(json.dumps({"error": "mistral_unexpected_response", "detail": data}))
+
+    assistant_content = (data.get("choices", [{}])[0] or {}).get("message", {}).get("content")
+    raw_text = _extract_assistant_text(assistant_content).strip()
+
+    spoken: str | None = None
+    fr: str | None = None
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, dict):
+            s = parsed.get("spoken")
+            t = parsed.get("fr")
+            if isinstance(s, str) and s.strip():
+                spoken = s.strip()
+            if isinstance(t, str) and t.strip():
+                fr = t.strip()
+    except Exception:
+        pass
+
+    if fr is None:
+        fr = raw_text
+    if spoken is None:
+        spoken = raw_text
+
+    return spoken, fr, data
+
+
+async def _translate_to_french(*, api_key: str, text: str) -> tuple[str, dict]:
+    src = (text or "").strip()
+    if not src:
+        return "", {}
+
+    model = (VOXTRAL_TRANSLATE_MODEL or "").strip() or "mistral-small-latest"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    prompt = (
+        "Traduis en français si nécessaire. "
+        "Si le texte est déjà en français, renvoie-le inchangé. "
+        "Réponds uniquement avec le texte final, sans guillemets ni markdown.\n\n" + src
+    )
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            r = await client.post(MISTRAL_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail: object
+            try:
+                detail = exc.response.json()
+            except Exception:
+                detail = exc.response.text
+            status = int(getattr(exc.response, "status_code", 502) or 502)
+            if 400 <= status < 500:
+                raise RuntimeError(json.dumps({"error": "mistral_request_rejected", "status": status, "detail": detail}))
+            raise RuntimeError(json.dumps({"error": "mistral_api_error", "status": status, "detail": detail}))
+        except httpx.RequestError as exc:
+            raise RuntimeError(json.dumps({"error": "mistral_request_failed", "detail": str(exc)}))
+
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+
+    assistant_content = (data.get("choices", [{}])[0] or {}).get("message", {}).get("content") if isinstance(data, dict) else None
+    out = _extract_assistant_text(assistant_content).strip()
+    return (out or src), (data if isinstance(data, dict) else {})
+
+
+def _convert_audio_to_wav(raw: bytes, input_suffix: str) -> bytes:
+    """Convertit n'importe quel format audio supporté par ffmpeg en wav PCM 16kHz mono."""
+
+    if imageio_ffmpeg is None:
+        raise RuntimeError("imageio-ffmpeg not installed")
+
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    in_suffix = input_suffix if input_suffix.startswith(".") else f".{input_suffix}"
+    if not in_suffix or in_suffix == ".":
+        in_suffix = ".webm"
+
+    in_path = out_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=in_suffix, delete=False) as in_f:
+            in_f.write(raw)
+            in_path = in_f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_f:
+            out_path = out_f.name
+
+        cmd = [
+            ffmpeg_exe,
+            "-y",
+            "-i",
+            in_path,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            out_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            raise RuntimeError(stderr or "ffmpeg conversion failed")
+
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (in_path, out_path):
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
+@app.post("/api/transcribe")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+):
+    """Transcrit un audio micro et renvoie du texte (français).
+
+    - Utilise Voxtral via l'endpoint chat/completions (audio input base64)
+    - Ne dépend pas du modèle sélectionné pour le chat (settings)
+    """
+
+    # Auth obligatoire (même logique que /api/chat)
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    month = datetime.datetime.utcnow().strftime("%Y-%m")
+
+    try:
+
+        # Limite mensuelle (10k tokens)
+        try:
+            used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": month})
+            used_int = int(used) if used is not None else 0
+        except Exception:
+            used_int = 0
+
+        TOKEN_CAP = 10_000
+        if used_int >= TOKEN_CAP:
+            return JSONResponse(
+                status_code=402,
+                content={
+                    "error": "token_limit_reached",
+                    "detail": f"Limite mensuelle atteinte ({TOKEN_CAP} tokens).",
+                },
+            )
+
+        mistral_api_key, _model_name, _default_system_prompt = _get_mistral_settings()
+        if not mistral_api_key:
+            return JSONResponse(status_code=500, content={"error": "missing_mistral_key"})
+
+        raw = await file.read()
+        if not raw:
+            return JSONResponse(status_code=400, content={"error": "empty_audio"})
+
+        # Basic guardrail (10MB)
+        if len(raw) > 10 * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"error": "audio_too_large"})
+
+        # Normalize audio to maximize compatibility.
+        # Browser sends webm/ogg; STT endpoints are most reliable with wav/mp3.
+        converted_to_wav = False
+        if not _looks_like_supported_audio(file.filename, file.content_type):
+            try:
+                ext = os.path.splitext(file.filename or "")[1].lower() or ".webm"
+                raw = _convert_audio_to_wav(raw, ext)
+                converted_to_wav = True
+            except Exception as exc:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "audio_conversion_failed",
+                        "detail": str(exc),
+                    },
+                )
+
+            # Re-check size after conversion (wav can be larger)
+            if len(raw) > 10 * 1024 * 1024:
+                return JSONResponse(status_code=413, content={"error": "audio_too_large"})
+
+        if not VOXTRAL_TRANSCRIBE_MODEL or not str(VOXTRAL_TRANSCRIBE_MODEL).strip():
+            return JSONResponse(status_code=500, content={"error": "missing_voxtral_model"})
+
+        model = str(VOXTRAL_TRANSCRIBE_MODEL).strip()
+
+        spoken = ""
+        fr = ""
+        data: dict = {}
+        try:
+            forced = VOXTRAL_TRANSCRIBE_ENDPOINT
+            use_transcriptions = False
+            if forced == "transcriptions":
+                use_transcriptions = True
+            elif forced == "chat":
+                use_transcriptions = False
+            else:
+                use_transcriptions = _should_use_transcriptions_endpoint(model)
+
+            if use_transcriptions:
+                # Standardize uploaded bytes as wav so we control codec/sample rate.
+                # (If already mp3/wav, no conversion happened.)
+                # Important: if we converted to wav, we must also update filename and content-type.
+                filename = file.filename or ("audio.wav" if converted_to_wav else "audio")
+                if converted_to_wav:
+                    filename = "audio.wav"
+                    ct = "audio/wav"
+                else:
+                    # Normalize content-type (strip codecs: "audio/webm;codecs=opus" -> "audio/webm")
+                    ct_raw = ((file.content_type or "").split(";", 1)[0]).strip().lower()
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext == ".wav":
+                        ct = "audio/wav"
+                    elif ext == ".mp3":
+                        ct = "audio/mpeg"
+                    else:
+                        ct = ct_raw or "application/octet-stream"
+                spoken, meta = await _mistral_audio_transcriptions(
+                    api_key=mistral_api_key,
+                    model=model,
+                    raw_audio=raw,
+                    filename=filename,
+                    content_type=ct,
+                    language=None,
+                )
+                data = meta if isinstance(meta, dict) else {}
+                fr, _tmeta = await _translate_to_french(api_key=mistral_api_key, text=spoken)
+            else:
+                audio_b64 = base64.b64encode(raw).decode("utf-8")
+                s, t, meta = await _mistral_chat_audio_to_json(
+                    api_key=mistral_api_key,
+                    model=model,
+                    audio_b64=audio_b64,
+                )
+                spoken = (s or "").strip()
+                fr = (t or "").strip()
+                data = meta if isinstance(meta, dict) else {}
+        except RuntimeError as exc:
+            # Helpers encode structured errors as JSON in the exception message.
+            msg = str(exc)
+            try:
+                payload_err = json.loads(msg)
+                code = str((payload_err or {}).get("error") or "")
+                detail = (payload_err or {}).get("detail")
+                status = int((payload_err or {}).get("status") or 502)
+                if code:
+                    return JSONResponse(status_code=status if 400 <= status <= 599 else 502, content={"error": code, "detail": detail})
+            except Exception:
+                pass
+            return JSONResponse(status_code=502, content={"error": "mistral_api_error", "detail": msg})
+
+        usage = data.get("usage") or {}
+        total_tokens = usage.get("total_tokens")
+        if total_tokens is None:
+            # fallback approximation (audio is unknown -> minimal)
+            approx_source = fr or spoken
+            total_tokens = max(1, int(len(approx_source) / 4))
+
+        try:
+            await _supabase_rpc(
+                "add_tokens",
+                {"p_user_id": user_id, "p_month": month, "p_tokens": int(total_tokens)},
+            )
+        except Exception:
+            pass
+
+        return {"spoken": spoken, "text": fr}
+
+    except Exception as exc:
+        # Last-resort safety: never return plain "Internal Server Error" without context.
+        tb = traceback.format_exc()
+        print("/api/transcribe internal error:")
+        print(tb)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "transcribe_internal",
+                "detail": f"{type(exc).__name__}: {exc}",
+            },
+        )
 
 
 @app.get("/{full_path:path}", response_class=HTMLResponse)
