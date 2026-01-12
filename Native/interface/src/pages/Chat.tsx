@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { MoreHorizontal } from 'lucide-react';
 import {
   getConversations,
   deleteConversation,
@@ -64,6 +65,7 @@ async function generateConversationTitle(seed: { user: string; assistant: string
 }
 
 export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: ChatProps) {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
@@ -102,6 +104,16 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const body = document.body;
+    const prevOverflow = body.style.overflow;
+    if (sidebarOpen) body.style.overflow = 'hidden';
+    return () => {
+      body.style.overflow = prevOverflow;
+    };
+  }, [sidebarOpen]);
 
   useEffect(() => {
     loadConversations();
@@ -474,6 +486,15 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
 
   return (
     <div className="min-h-screen bg-transparent">
+      <button
+        type="button"
+        onClick={() => setSidebarOpen((v) => !v)}
+        className="fixed top-4 left-4 z-60 w-10 h-10 flex items-center justify-center bg-white/30 text-gray-900 dark:text-gray-100 border border-white/40 dark:border-white/15 rounded-full hover:bg-white/40 transition-colors backdrop-blur-md"
+        title="Menu"
+      >
+        <MoreHorizontal size={20} />
+      </button>
+
       {authRequired && (
         <div className="fixed left-1/2 top-6 -translate-x-1/2 z-[60] rounded-2xl border border-white/45 bg-white/35 backdrop-blur-md px-4 py-2 text-sm text-gray-900 dark:text-white dark:bg-white/10">
           Connexion requise pour envoyer un message.
@@ -485,6 +506,8 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         </div>
       )}
       <Sidebar
+        open={sidebarOpen}
+        onOpenChange={setSidebarOpen}
         onNewChat={handleNewChat}
         onApps={onAppClick}
         onHome={onBackHome}
@@ -495,7 +518,7 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
       />
       <Header onHome={onBackHome} />
 
-      <main className="ml-20 pt-16 h-screen flex flex-col p-6 md:p-8">
+      <main className="pt-16 h-screen flex flex-col p-6 md:p-8">
         <div
           className={
             "flex-1 min-h-0 w-full max-w-5xl mx-auto flex flex-col transition-all duration-500 ease-in-out " +
