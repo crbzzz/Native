@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Paperclip, Search, Sparkles, MoreHorizontal, ArrowUp, Mic, Loader2, Square } from 'lucide-react';
+import { Paperclip, Search, Sparkles, ArrowUp, Mic, Loader2, Square } from 'lucide-react';
 import { transcribeAudio } from '../lib/nativeChat';
 
 interface ChatInputProps {
@@ -200,7 +200,7 @@ export default function ChatInput({
         <textarea
           ref={textareaRef}
           placeholder="Ask anything"
-          className="relative z-10 w-full px-6 pt-3 pb-10 bg-transparent resize-none outline-none text-gray-900 dark:text-white placeholder-gray-500/80 dark:placeholder-white/50"
+          className="relative z-10 w-full px-5 pt-2.5 pb-9 bg-transparent resize-none outline-none text-gray-900 dark:text-white placeholder-gray-500/80 dark:placeholder-white/50"
           rows={1}
           value={value}
           onChange={(e) => {
@@ -215,7 +215,17 @@ export default function ChatInput({
           }}
         />
 
-        <div className="absolute bottom-2 left-6 right-16 flex items-center gap-4 relative z-10">
+        {(sttError || sttInfo) && (
+          <div className="absolute bottom-[2.85rem] left-5 right-14 z-10 text-[11px]">
+            {sttError ? (
+              <span className="text-red-600 dark:text-red-400">{sttError}</span>
+            ) : (
+              <span className="text-gray-600 dark:text-white/60">Transcription ajoutée</span>
+            )}
+          </div>
+        )}
+
+        <div className="absolute bottom-1.5 left-5 right-14 flex items-center gap-4 relative z-10">
           <button
             type="button"
             className="flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-white/60 dark:hover:text-white transition-colors"
@@ -298,13 +308,6 @@ export default function ChatInput({
             <span>Reason</span>
           </button>
 
-          <button
-            type="button"
-            className="flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-white/60 dark:hover:text-white transition-colors"
-            title="More"
-          >
-            <MoreHorizontal size={18} />
-          </button>
         </div>
 
         <button
@@ -312,7 +315,7 @@ export default function ChatInput({
           disabled={disabled}
           onClick={onSend}
           className={
-            'absolute bottom-2 right-3 z-20 w-10 h-10 rounded-full flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ' +
+            'absolute bottom-1.5 right-3 z-20 w-10 h-10 rounded-full flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ' +
             'overflow-hidden ' +
             'bg-white/45 text-gray-900 border border-white/50 backdrop-blur-sm backdrop-saturate-150 hover:bg-white/55 ' +
             'dark:bg-white/10 dark:text-white dark:border-white/15 dark:hover:bg-white/14 ' +
