@@ -3,8 +3,12 @@ export type ThemeMode = 'light' | 'dark';
 const STORAGE_KEY = 'nativeaid.theme';
 
 export function getStoredTheme(): ThemeMode {
-  const v = localStorage.getItem(STORAGE_KEY);
-  return v === 'dark' ? 'dark' : 'light';
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    return v === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
 }
 
 export function applyTheme(mode: ThemeMode) {
@@ -14,7 +18,11 @@ export function applyTheme(mode: ThemeMode) {
 }
 
 export function setTheme(mode: ThemeMode) {
-  localStorage.setItem(STORAGE_KEY, mode);
+  try {
+    localStorage.setItem(STORAGE_KEY, mode);
+  } catch {
+    // ignore
+  }
   applyTheme(mode);
 }
 

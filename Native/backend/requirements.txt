@@ -6,3 +6,4 @@ python-multipart
 pypdf
 pillow
 pytesseract
+imageio-ffmpeg

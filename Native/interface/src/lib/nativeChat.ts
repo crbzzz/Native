@@ -92,3 +92,59 @@ export async function sendChatPersisted(
     conversation: data.conversation,
   };
 }
+
+type TranscribeResponse = {
+  spoken?: string;
+  text?: string;
+};
+
+export async function transcribeAudio(file: File): Promise<{ spoken: string; text: string }> {
+  const form = new FormData();
+  form.append('file', file, file.name || 'audio.webm');
+
+  const token = await getAccessToken();
+  const res = await fetch('/api/transcribe', {
+    method: 'POST',
+    body: form,
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  if (!res.ok) {
+    let text = await res.text().catch(() => '');
+
+    // FastAPI default for uncaught exceptions
+    if (res.status >= 500 && text.trim().toLowerCase() === 'internal server error') {
+      throw new Error('Erreur serveur (transcription). Redémarre le backend et réessaie.');
+    }
+    try {
+      const parsed = JSON.parse(text) as any;
+      const code = String(parsed?.error || '').toLowerCase();
+      const detail = parsed?.detail;
+      const detailMsg =
+        typeof detail === 'string'
+          ? detail
+          : typeof detail?.message === 'string'
+            ? detail.message
+            : '';
+
+      if (code.includes('auth_required') || code.includes('invalid_auth') || res.status === 401) {
+        throw new Error('Connexion requise.');
+      }
+      if (code.includes('audio_conversion_failed')) {
+        throw new Error('Audio non supporté par la transcription (conversion impossible).');
+      }
+      if ((code.includes('mistral_api_error') || code.includes('mistral_request_rejected')) && detailMsg.toLowerCase().includes('failed to load audio file')) {
+        throw new Error('Audio invalide pour Voxtral. Essaie un enregistrement plus long (ou re-teste).');
+      }
+
+      if (detailMsg) throw new Error(detailMsg);
+      throw new Error(code ? `Erreur: ${code}` : `HTTP ${res.status}`);
+    } catch {
+      // ignore JSON parse errors
+    }
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+
+  const data = (await res.json()) as TranscribeResponse;
+  return { spoken: data.spoken ?? '', text: data.text ?? '' };
+}
