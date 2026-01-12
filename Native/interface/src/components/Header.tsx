@@ -7,9 +7,10 @@ import { getSfxEnabled, setSfxEnabled } from '../lib/sfx';
 
 interface HeaderProps {
   onHome?: () => void;
+  onSettingsOpenChange?: (open: boolean) => void;
 }
 
-export default function Header({ onHome }: HeaderProps) {
+export default function Header({ onHome, onSettingsOpenChange }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setThemeState] = useState<ThemeMode>('light');
   const [sfxEnabled, setSfxEnabledState] = useState(true);
@@ -53,6 +54,10 @@ export default function Header({ onHome }: HeaderProps) {
 
     void run();
   }, [menuOpen]);
+
+  useEffect(() => {
+    onSettingsOpenChange?.(menuOpen);
+  }, [menuOpen, onSettingsOpenChange]);
 
   const handleLogout = async () => {
     await signOut();
@@ -204,7 +209,7 @@ export default function Header({ onHome }: HeaderProps) {
         );
 
   return (
-    <div className="fixed top-4 right-4 z-60">
+    <div className="fixed top-4 right-4 z-[70]">
       <button
         type="button"
         onClick={() => setMenuOpen((v) => !v)}
