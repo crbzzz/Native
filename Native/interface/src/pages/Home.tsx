@@ -2,6 +2,7 @@ import { signOut } from '../lib/auth';
 import { Plus, Grid, LogIn, LogOut } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { getAccessToken } from '../lib/auth';
+import Header from '../components/Header';
 
 type PlanId = 'free' | 'pro';
 
@@ -93,58 +94,68 @@ export default function Home({ user, onNewChat, onApps, onOpenAuth, onDocs, onPr
           </button>
         </div>
 
-        <div className="sm:hidden relative">
-          <button
-            type="button"
-            onClick={() => setMenuOpen((v) => !v)}
-            className="px-3 py-2 rounded-xl border border-white/40 bg-white/25 hover:bg-white/35 transition-colors text-sm text-gray-800 dark:text-white/80 dark:bg-white/10 dark:border-white/12"
-          >
-            Menu
-          </button>
-          {menuOpen && (
-            <div className="absolute right-0 mt-2 w-44 rounded-2xl border border-black/5 dark:border-white/12 bg-white/85 dark:bg-slate-900/75 text-gray-900 dark:text-white/90 backdrop-blur-md shadow-2xl overflow-hidden">
-              <button
-                type="button"
-                className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 dark:hover:bg-white/10"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onDocs();
-                }}
-              >
-                Documentation
-              </button>
-              <button
-                type="button"
-                className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 dark:hover:bg-white/10"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onPricing();
-                }}
-              >
-                Plans
-              </button>
-              <button
-                type="button"
-                className="w-full text-left px-4 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onPricing();
-                }}
-              >
-                {getStartedLabel}
-              </button>
-              <button
-                type="button"
-                className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 dark:hover:bg-white/10"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onChangelog();
-                }}
-              >
-                Changelog
-              </button>
-            </div>
-          )}
+        <div className="hidden sm:block ml-3">
+          <Header placement="inline" />
+        </div>
+
+        <div className="sm:hidden flex items-center gap-3">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              className="px-3 py-2 rounded-xl border border-white/40 bg-white/25 hover:bg-white/35 transition-colors text-sm text-gray-800 dark:text-white/80 dark:bg-white/10 dark:border-white/12"
+            >
+              Menu
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 mt-2 w-44 rounded-2xl border border-black/5 dark:border-white/12 bg-white/85 dark:bg-slate-900/75 text-gray-900 dark:text-white/90 backdrop-blur-md shadow-2xl overflow-hidden">
+                <button
+                  type="button"
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 dark:hover:bg-white/10"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDocs();
+                  }}
+                >
+                  Documentation
+                </button>
+                <button
+                  type="button"
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 dark:hover:bg-white/10"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onPricing();
+                  }}
+                >
+                  Plans
+                </button>
+                <button
+                  type="button"
+                  className="w-full text-left px-4 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onPricing();
+                  }}
+                >
+                  {getStartedLabel}
+                </button>
+                <button
+                  type="button"
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 dark:hover:bg-white/10"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onChangelog();
+                  }}
+                >
+                  Changelog
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="ml-1">
+            <Header placement="inline" />
+          </div>
         </div>
       </div>
 
