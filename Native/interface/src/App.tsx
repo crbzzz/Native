@@ -219,6 +219,14 @@ function App() {
               user={AUTH_DISABLED ? { id: 'disabled' } : user}
               onBackHome={() => navigate('home')}
               onAppClick={() => navigate('apps')}
+              onOpenStudioProject={(conversationId) => {
+                try {
+                  window.localStorage.setItem('native:studio:openConversationId', conversationId);
+                } catch (_) {
+                  // ignore
+                }
+                navigate('studio');
+              }}
               onRequireAuth={() => setShowAuth(true)}
             />
           )}

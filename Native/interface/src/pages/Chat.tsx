@@ -33,6 +33,7 @@ interface ChatProps {
   user: any;
   onBackHome: () => void;
   onAppClick: () => void;
+  onOpenStudioProject: (conversationId: string) => void;
   onRequireAuth: () => void;
 }
 
@@ -87,7 +88,32 @@ async function generateConversationTitle(seed: { user: string; assistant: string
   return formatTwoWordTitle(raw);
 }
 
-export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: ChatProps) {
+const CODE_STUDIO_PREFIX = '[Code Studio] ';
+
+function isMobileViewport(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return Boolean(window.matchMedia?.('(max-width: 640px)')?.matches);
+  } catch (_) {
+    return false;
+  }
+}
+
+function readBoolFromStorage(key: string): boolean | undefined {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return undefined;
+    const v = raw.trim().toLowerCase();
+    if (v === '1' || v === 'true' || v === 'yes' || v === 'on') return true;
+    if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false;
+    return undefined;
+  } catch (_) {
+    return undefined;
+  }
+}
+
+export default function Chat({ user, onBackHome, onAppClick, onOpenStudioProject, onRequireAuth }: ChatProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -99,8 +125,16 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
   const [sending, setSending] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
-  const [deepSearch, setDeepSearch] = useState(false);
-  const [reason, setReason] = useState(false);
+  const [deepSearch, setDeepSearch] = useState<boolean>(() => {
+    const saved = readBoolFromStorage('native:chat:deepSearch');
+    if (typeof saved === 'boolean') return saved;
+    return isMobileViewport();
+  });
+  const [reason, setReason] = useState<boolean>(() => {
+    const saved = readBoolFromStorage('native:chat:reason');
+    if (typeof saved === 'boolean') return saved;
+    return isMobileViewport();
+  });
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [authRequired, setAuthRequired] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -137,6 +171,53 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
   }, []);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem('native:chat:deepSearch', deepSearch ? '1' : '0');
+    } catch (_) {
+      // ignore
+    }
+  }, [deepSearch]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('native:chat:reason', reason ? '1' : '0');
+    } catch (_) {
+      // ignore
+    }
+  }, [reason]);
+
+  // On iPhone-sized layouts, the Reason toggle is hidden; ensure Reason is disabled.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let mql: MediaQueryList | null = null;
+    try {
+      mql = window.matchMedia?.('(max-width: 640px)') ?? null;
+    } catch (_) {
+      mql = null;
+    }
+
+    const sync = () => {
+      if (mql?.matches) setReason(false);
+    };
+
+    sync();
+
+    if (!mql) return;
+    const anyMql = mql as any;
+    if (typeof mql.addEventListener === 'function') {
+      mql.addEventListener('change', sync);
+      return () => mql?.removeEventListener('change', sync);
+    }
+    if (typeof anyMql.addListener === 'function') {
+      anyMql.addListener(sync);
+      return () => anyMql.removeListener(sync);
+    }
+    return;
+  }, []);
+
+  const effectiveReason = isMobileViewport() ? false : reason;
+
+  useEffect(() => {
     if (typeof document === 'undefined') return;
     const body = document.body;
     const prevOverflow = body.style.overflow;
@@ -149,6 +230,14 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
   useEffect(() => {
     loadConversations();
   }, [user]);
+
+  const sidebarItems = useMemo(() => {
+    return (conversations ?? []).map((c) => ({
+      id: c.id,
+      title: c.title,
+      kind: c.title?.startsWith(CODE_STUDIO_PREFIX) ? ('studio' as const) : ('chat' as const),
+    }));
+  }, [conversations]);
 
   useEffect(() => {
     if (user && authRequired) setAuthRequired(false);
@@ -462,7 +551,7 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         conversationTitle: 'New Conversation',
         attachments,
         deepSearch,
-        reason,
+        reason: effectiveReason,
         files: filesToSend,
       });
       const reply = sanitizeAssistantText(resp.reply);
@@ -583,7 +672,7 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         conversationTitle: 'New Conversation',
         attachments: [],
         deepSearch,
-        reason,
+        reason: effectiveReason,
         files: [],
       });
       const reply = sanitizeAssistantText(resp.reply);
@@ -650,10 +739,11 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         onNewChat={handleNewChat}
         onApps={onAppClick}
         onHome={onBackHome}
-        conversations={conversations}
+        conversations={sidebarItems}
         selectedId={selectedId}
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDelete}
+        onOpenStudioProject={onOpenStudioProject}
       />
       <Header onHome={onBackHome} onSettingsOpenChange={setSettingsOpen} />
 
@@ -771,9 +861,12 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
               onSend={handleSend}
               disabled={sending}
               deepSearch={deepSearch}
-              reason={reason}
+              reason={effectiveReason}
               onDeepSearchChange={setDeepSearch}
-              onReasonChange={setReason}
+              onReasonChange={(v) => {
+                if (isMobileViewport()) return;
+                setReason(v);
+              }}
               onFilesSelected={setPendingFiles}
             />
           </div>

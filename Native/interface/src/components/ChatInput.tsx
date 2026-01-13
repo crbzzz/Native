@@ -200,7 +200,7 @@ export default function ChatInput({
         <textarea
           ref={textareaRef}
           placeholder="Ask anything"
-          className="relative z-10 w-full px-5 pt-2.5 pb-9 bg-transparent resize-none outline-none text-gray-900 dark:text-white placeholder-gray-500/80 dark:placeholder-white/50"
+          className="relative z-10 w-full px-5 pt-2.5 pb-16 sm:pb-9 bg-transparent resize-none outline-none text-gray-900 dark:text-white placeholder-gray-500/80 dark:placeholder-white/50"
           rows={1}
           value={value}
           onChange={(e) => {
@@ -216,7 +216,7 @@ export default function ChatInput({
         />
 
         {(sttError || sttInfo) && (
-          <div className="absolute bottom-[2.85rem] left-5 right-14 z-10 text-[11px]">
+          <div className="absolute bottom-[4.85rem] sm:bottom-[2.85rem] left-5 right-16 sm:right-14 z-10 text-[11px]">
             {sttError ? (
               <span className="text-red-600 dark:text-red-400">{sttError}</span>
             ) : (
@@ -225,7 +225,7 @@ export default function ChatInput({
           </div>
         )}
 
-        <div className="absolute bottom-1.5 left-5 right-14 flex items-center gap-4 relative z-10">
+        <div className="absolute bottom-1.5 left-5 right-16 sm:right-14 flex flex-wrap items-center gap-x-3 gap-y-2 relative z-10">
           <button
             type="button"
             className="flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-white/60 dark:hover:text-white transition-colors"
@@ -283,7 +283,7 @@ export default function ChatInput({
             aria-pressed={Boolean(deepSearch)}
             onClick={() => onDeepSearchChange?.(!deepSearch)}
             className={
-              'flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border ' +
+              'flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border whitespace-nowrap ' +
               (deepSearch
                 ? 'text-gray-900 border-gray-300 bg-gray-100/80 dark:text-white dark:border-white/15 dark:bg-white/10'
                 : 'text-gray-600 border-transparent hover:text-gray-800 dark:text-white/70 dark:hover:text-white')
@@ -298,7 +298,7 @@ export default function ChatInput({
             aria-pressed={Boolean(reason)}
             onClick={() => onReasonChange?.(!reason)}
             className={
-              'flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border ' +
+              'hidden sm:flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border whitespace-nowrap ' +
               (reason
                 ? 'text-gray-900 border-gray-300 bg-gray-100/80 dark:text-white dark:border-white/15 dark:bg-white/10'
                 : 'text-gray-600 border-transparent hover:text-gray-800 dark:text-white/70 dark:hover:text-white')
