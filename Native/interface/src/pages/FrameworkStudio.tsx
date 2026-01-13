@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Download, GripVertical, Search, X } from 'lucide-react';
+import { ArrowLeft, GripVertical, MoreVertical, Search, X } from 'lucide-react';
 import ChatInput from '../components/ChatInput';
 import MessageContent from '../components/MessageContent';
 import Header from '../components/Header';
@@ -168,6 +168,8 @@ export default function FrameworkStudio({
   const [fileFilter, setFileFilter] = useState('');
   const [copied, setCopied] = useState(false);
   const [zipping, setZipping] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const fileAnimTokenRef = useRef(0);
 
@@ -482,6 +484,73 @@ export default function FrameworkStudio({
     }
   };
 
+  const sanitizeRelativePath = (p: string): string[] | null => {
+    const raw = normalizedPath(p).replace(/^\/+/, '').trim();
+    if (!raw) return null;
+    const parts = raw.split('/').map((s) => s.trim()).filter(Boolean);
+    if (!parts.length) return null;
+    if (parts.some((seg) => seg === '.' || seg === '..')) return null;
+    return parts;
+  };
+
+  const handleExportToFolder = async () => {
+    if (!files.length) return;
+    const picker = (window as any)?.showDirectoryPicker as undefined | (() => Promise<any>);
+    if (!picker) {
+      // Fallback: best effort
+      await handleDownloadZip();
+      return;
+    }
+
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const root = await picker();
+      for (const f of files) {
+        const parts = sanitizeRelativePath(f.name);
+        if (!parts) continue;
+
+        const fileName = parts[parts.length - 1]!;
+        const dirParts = parts.slice(0, -1);
+
+        let dirHandle: any = root;
+        for (const seg of dirParts) {
+          dirHandle = await dirHandle.getDirectoryHandle(seg, { create: true });
+        }
+
+        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(f.code ?? '');
+        await writable.close();
+      }
+    } finally {
+      setExporting(false);
+      setActionsOpen(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-actions-root="true"]')) return;
+      setActionsOpen(false);
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setActionsOpen(false);
+    };
+
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [actionsOpen]);
+
   return (
     <div className="h-screen bg-transparent overflow-hidden">
       {showPersonalMenu && !resolvedShowTopBar && <Header />}
@@ -549,19 +618,7 @@ export default function FrameworkStudio({
                 <div className="px-6 py-3 border-b border-white/35 dark:border-white/10">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-sm font-semibold text-gray-900 dark:text-white">Brief</div>
-                      <div className="text-xs text-gray-600 dark:text-white/70">
-                        Décris le projet, contraintes, et fichiers attendus.
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setInput('Créer un projet TypeScript propre avec une structure src/, linting, et un README.\n\nFonctionnalités: ...')}
-                        className="text-xs px-3 py-2 rounded-full border border-white/45 bg-white/35 text-gray-800 hover:bg-white/45 dark:bg-white/10 dark:text-white/70 dark:border-white/12 dark:hover:bg-white/12"
-                      >
-                        Template
-                      </button>
+                      <div className="text-sm font-semibold text-gray-900 dark:text-white">Instructions</div>
                     </div>
                   </div>
                 </div>
@@ -750,52 +807,88 @@ export default function FrameworkStudio({
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={handleDownloadZip}
-                      disabled={files.length === 0 || zipping}
-                      className="text-sm rounded-xl px-3 py-2 border border-white/45 bg-white/35 text-gray-900 hover:bg-white/45 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:text-white dark:border-white/12 dark:hover:bg-white/12"
-                      title="Télécharger en ZIP (un seul fichier)"
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Download size={16} />
-                        ZIP
-                      </span>
-                    </button>
+                    <div className="relative" data-actions-root="true">
+                      <button
+                        type="button"
+                        onClick={() => setActionsOpen((v) => !v)}
+                        className="h-10 w-10 inline-flex items-center justify-center rounded-xl border border-white/45 bg-white/35 text-gray-900 hover:bg-white/45 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:text-white dark:border-white/12 dark:hover:bg-white/12"
+                        title="Actions"
+                        aria-haspopup="menu"
+                        aria-expanded={actionsOpen}
+                        disabled={files.length === 0 && !selectedFile}
+                      >
+                        <MoreVertical size={18} />
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={handleDownloadAll}
-                      disabled={files.length === 0}
-                      className="text-sm rounded-xl px-3 py-2 border border-white/45 bg-white/35 text-gray-900 hover:bg-white/45 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:text-white dark:border-white/12 dark:hover:bg-white/12"
-                      title="Télécharger tous les fichiers"
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Download size={16} />
-                        Tout
-                      </span>
-                    </button>
+                      {actionsOpen && (
+                        <div
+                          role="menu"
+                          className="absolute right-0 mt-2 w-56 rounded-2xl border border-black/5 dark:border-white/12 bg-white/85 dark:bg-slate-900/75 text-gray-900 dark:text-white/90 backdrop-blur-md shadow-2xl overflow-hidden"
+                        >
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={handleExportToFolder}
+                            disabled={files.length === 0 || exporting || zipping}
+                            className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Exporter vers dossier…
+                          </button>
 
-                    <button
-                      type="button"
-                      onClick={handleDownloadSelected}
-                      disabled={!selectedFile}
-                      className="text-sm rounded-xl px-3 py-2 border border-white/45 bg-white/35 text-gray-900 hover:bg-white/45 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:text-white dark:border-white/12 dark:hover:bg-white/12"
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Download size={16} />
-                        Fichier
-                      </span>
-                    </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={handleDownloadZip}
+                            disabled={files.length === 0 || zipping || exporting}
+                            className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Télécharger en ZIP (un seul fichier)"
+                          >
+                            ZIP
+                          </button>
 
-                    <button
-                      type="button"
-                      onClick={handleCopy}
-                      disabled={!selectedFile}
-                      className="text-sm rounded-xl px-3 py-2 border border-white/45 bg-white/35 text-gray-900 hover:bg-white/45 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:text-white dark:border-white/12 dark:hover:bg-white/12"
-                    >
-                      {copied ? 'Copié' : 'Copier'}
-                    </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setActionsOpen(false);
+                              void handleDownloadAll();
+                            }}
+                            disabled={files.length === 0}
+                            className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Télécharger tout
+                          </button>
+
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setActionsOpen(false);
+                              handleDownloadSelected();
+                            }}
+                            disabled={!selectedFile}
+                            className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Télécharger ce fichier
+                          </button>
+
+                          <div className="h-px bg-black/10 dark:bg-white/10" />
+
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={async () => {
+                              setActionsOpen(false);
+                              await handleCopy();
+                            }}
+                            disabled={!selectedFile}
+                            className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {copied ? 'Copié' : 'Copier'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex-1 min-h-0 flex flex-col">
