@@ -1,6 +1,9 @@
 import { signOut } from '../lib/auth';
 import { Plus, Grid, LogIn, LogOut } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { getAccessToken } from '../lib/auth';
+
+type PlanId = 'free' | 'pro';
 
 interface HomeProps {
   user: any;
@@ -18,6 +21,36 @@ export default function Home({ user, onNewChat, onApps, onOpenAuth, onDocs, onPr
   };
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [plan, setPlan] = useState<PlanId | null>(null);
+
+  useEffect(() => {
+    const run = async () => {
+      if (!user) {
+        setPlan(null);
+        return;
+      }
+      const token = await getAccessToken();
+      if (!token) {
+        setPlan(null);
+        return;
+      }
+      try {
+        const res = await fetch('/api/usage', { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) {
+          setPlan(null);
+          return;
+        }
+        const data = (await res.json()) as { plan?: PlanId };
+        setPlan(data.plan ?? null);
+      } catch {
+        setPlan(null);
+      }
+    };
+
+    void run();
+  }, [user]);
+
+  const getStartedLabel = plan === 'pro' ? 'PRO' : 'Get started';
 
   return (
     <div className="min-h-screen bg-transparent">
@@ -41,7 +74,7 @@ export default function Home({ user, onNewChat, onApps, onOpenAuth, onDocs, onPr
             onClick={onPricing}
             className="text-sm text-gray-700 hover:text-gray-900 dark:text-white/70 dark:hover:text-white transition-colors"
           >
-            Pricing
+            Plans
           </button>
           <button
             type="button"
@@ -49,6 +82,14 @@ export default function Home({ user, onNewChat, onApps, onOpenAuth, onDocs, onPr
             className="text-sm text-gray-700 hover:text-gray-900 dark:text-white/70 dark:hover:text-white transition-colors"
           >
             Changelog
+          </button>
+
+          <button
+            type="button"
+            onClick={onPricing}
+            className="ml-2 inline-flex items-center justify-center px-4 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm transition-colors"
+          >
+            {getStartedLabel}
           </button>
         </div>
 
@@ -80,7 +121,17 @@ export default function Home({ user, onNewChat, onApps, onOpenAuth, onDocs, onPr
                   onPricing();
                 }}
               >
-                Pricing
+                Plans
+              </button>
+              <button
+                type="button"
+                className="w-full text-left px-4 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onPricing();
+                }}
+              >
+                {getStartedLabel}
               </button>
               <button
                 type="button"

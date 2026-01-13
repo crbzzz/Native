@@ -25,6 +25,27 @@ type ChatApiResponse = {
   conversation?: any;
 };
 
+export class ChatApiError extends Error {
+  status: number;
+  code?: string;
+  detail?: string;
+  constructor(message: string, opts: { status: number; code?: string; detail?: string }) {
+    super(message);
+    this.name = 'ChatApiError';
+    this.status = opts.status;
+    this.code = opts.code;
+    this.detail = opts.detail;
+  }
+}
+
+function safeJsonParse(text: string): any | null {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 async function postChat(messages: ChatMessage[], options?: SendChatOptions): Promise<ChatApiResponse> {
   const form = new FormData();
   form.append('messages', JSON.stringify(messages));
@@ -70,7 +91,11 @@ async function postChat(messages: ChatMessage[], options?: SendChatOptions): Pro
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || `HTTP ${res.status}`);
+    const parsed = safeJsonParse(text);
+    const code = typeof parsed?.error === 'string' ? parsed.error : undefined;
+    const detail = typeof parsed?.detail === 'string' ? parsed.detail : undefined;
+    const message = detail || (typeof parsed?.message === 'string' ? parsed.message : '') || text || `HTTP ${res.status}`;
+    throw new ChatApiError(message, { status: res.status, code, detail });
   }
 
   return (await res.json()) as ChatApiResponse;

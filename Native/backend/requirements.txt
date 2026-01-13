@@ -7,3 +7,8 @@ pypdf
 pillow
 pytesseract
 imageio-ffmpeg
+stripe
+pypdf
+pillow
+pytesseract
+imageio-ffmpeg
