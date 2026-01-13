@@ -292,6 +292,7 @@ async def admin_stats(authorization: Optional[str] = Header(None)):
         "tokensByMonth": tokens_by_month,
     }
 
+
 # CORS (utile si l'interface Vite tourne sur un autre port en dev)
 app.add_middleware(
     CORSMiddleware,

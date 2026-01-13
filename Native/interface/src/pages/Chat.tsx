@@ -39,8 +39,31 @@ interface ChatProps {
 type AttachmentMeta = { name: string; type: string; size: number };
 
 type UiMessage = ChatMessage & {
+  id?: string;
+  created_at?: string;
   attachments?: AttachmentMeta[];
 };
+
+async function copyToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  if (typeof document === 'undefined') return;
+  const el = document.createElement('textarea');
+  el.value = text;
+  el.setAttribute('readonly', 'true');
+  el.style.position = 'fixed';
+  el.style.left = '-9999px';
+  document.body.appendChild(el);
+  el.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    document.body.removeChild(el);
+  }
+}
 
 function formatTwoWordTitle(raw: string): string {
   const cleaned = raw
@@ -66,6 +89,7 @@ async function generateConversationTitle(seed: { user: string; assistant: string
 
 export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: ChatProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
@@ -79,6 +103,9 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
   const [reason, setReason] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [authRequired, setAuthRequired] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [inputDrop, setInputDrop] = useState(false);
+  const inputDropTimerRef = useRef<number | null>(null);
 
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
@@ -102,6 +129,10 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         window.clearTimeout(sendingWatchdogRef.current);
         sendingWatchdogRef.current = null;
       }
+      if (inputDropTimerRef.current) {
+        window.clearTimeout(inputDropTimerRef.current);
+        inputDropTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -123,6 +154,12 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
     if (user && authRequired) setAuthRequired(false);
   }, [user, authRequired]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 2200);
+    return () => window.clearTimeout(t);
+  }, [toast]);
+
   // Charge les messages lorsqu'on sélectionne une conversation
   useEffect(() => {
     const run = async () => {
@@ -143,6 +180,8 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         const rows = await getMessages(selectedId);
         setMessages(
           rows.map((r) => ({
+            id: r.id,
+            created_at: r.created_at,
             role: r.role,
             content: r.content,
             attachments: (r as any).attachments ?? undefined,
@@ -358,6 +397,14 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
     const text = input.trim();
     if (!text || sending) return;
 
+    // Micro animation: l'input "descend" au moment de l'envoi.
+    setInputDrop(true);
+    if (inputDropTimerRef.current) window.clearTimeout(inputDropTimerRef.current);
+    inputDropTimerRef.current = window.setTimeout(() => {
+      setInputDrop(false);
+      inputDropTimerRef.current = null;
+    }, 220);
+
     // Si l'état React n'est pas encore à jour, on re-check côté Supabase.
     const token = await getAccessToken();
     if (!token) {
@@ -484,12 +531,96 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
     }
   };
 
+  const handleCopyAssistantMessage = async (idx: number) => {
+    const m = messages[idx];
+    if (!m || m.role !== 'assistant') return;
+    try {
+      await copyToClipboard(m.content || '');
+      setToast('Réponse copiée');
+    } catch (_) {
+      setToast('Impossible de copier');
+    }
+  };
+
+  const handleRegenerateLastAssistant = async (idx: number) => {
+    if (sending) return;
+    if (idx !== messages.length - 1) return;
+    const m = messages[idx];
+    const prev = messages[idx - 1];
+    if (!m || m.role !== 'assistant') return;
+    if (!prev || prev.role !== 'user') return;
+    if (!selectedId) {
+      // Sans conversation persistée on évite d'essayer une regénération incohérente.
+      setToast('Impossible de régénérer ici');
+      return;
+    }
+
+    // Auth obligatoire.
+    const token = await getAccessToken();
+    if (!token) {
+      setAuthRequired(true);
+      onRequireAuth();
+      return;
+    }
+
+    clearTypingTimer();
+    setSending(true);
+    setThinking(true);
+
+    // On vide le dernier message assistant et on anime dessus.
+    setMessages((prevMsgs) => {
+      const next = [...prevMsgs];
+      const last = next[next.length - 1];
+      if (last?.role === 'assistant') next[next.length - 1] = { ...last, content: '' };
+      return next;
+    });
+
+    const history: ChatMessage[] = messages.slice(0, idx).map((x) => ({ role: x.role, content: x.content }));
+
+    try {
+      const resp = await sendChatPersisted(history, {
+        conversationId: selectedId,
+        conversationTitle: 'New Conversation',
+        attachments: [],
+        deepSearch,
+        reason,
+        files: [],
+      });
+      const reply = sanitizeAssistantText(resp.reply);
+      setThinking(false);
+
+      await animateAssistantTyping(reply, async () => {
+        playBotDoneSound();
+        if (sendingWatchdogRef.current) {
+          window.clearTimeout(sendingWatchdogRef.current);
+          sendingWatchdogRef.current = null;
+        }
+        setSending(false);
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to contact server';
+      setThinking(false);
+      setSending(false);
+      setToast('Erreur régénération');
+      // On remet le texte d'erreur dans le message assistant.
+      setMessages((prevMsgs) => {
+        const next = [...prevMsgs];
+        const last = next[next.length - 1];
+        if (last?.role === 'assistant') next[next.length - 1] = { ...last, content: msg };
+        return next;
+      });
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-transparent">
+    <div className="min-h-screen native-animated-bg">
       <button
         type="button"
         onClick={() => setSidebarOpen((v) => !v)}
-        className="fixed top-4 left-4 z-60 w-10 h-10 flex items-center justify-center bg-white/30 text-gray-900 dark:text-gray-100 border border-white/40 dark:border-white/15 rounded-full hover:bg-white/40 transition-colors backdrop-blur-md"
+        className={
+          'fixed top-4 left-4 z-[70] w-10 h-10 flex items-center justify-center bg-white/30 text-gray-900 dark:text-gray-100 border border-white/40 dark:border-white/15 rounded-full hover:bg-white/40 transition-colors backdrop-blur-md transition-opacity duration-200 ' +
+          (settingsOpen || sidebarOpen ? 'opacity-0 pointer-events-none' : 'opacity-100')
+        }
         title="Menu"
       >
         <MoreHorizontal size={20} />
@@ -500,11 +631,19 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
           Connexion requise pour envoyer un message.
         </div>
       )}
+
       {messagesLoadError && (
         <div className="fixed left-1/2 top-[4.5rem] -translate-x-1/2 z-[60] max-w-[92vw] rounded-2xl border border-white/45 bg-white/35 backdrop-blur-md px-4 py-2 text-sm text-gray-900 dark:text-white dark:bg-white/10">
           Impossible de charger l'historique: {messagesLoadError}
         </div>
       )}
+
+      {toast && (
+        <div className="fixed left-1/2 top-[6.8rem] -translate-x-1/2 z-[60] rounded-2xl border border-white/45 bg-white/35 backdrop-blur-md px-4 py-2 text-sm text-gray-900 dark:text-white dark:bg-white/10 native-toast-in">
+          {toast}
+        </div>
+      )}
+
       <Sidebar
         open={sidebarOpen}
         onOpenChange={setSidebarOpen}
@@ -516,23 +655,25 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
         onSelectConversation={handleSelectConversation}
         onDeleteConversation={handleDelete}
       />
-      <Header onHome={onBackHome} />
+      <Header onHome={onBackHome} onSettingsOpenChange={setSettingsOpen} />
 
-      <main className="pt-16 h-screen flex flex-col p-6 md:p-8">
+      <main
+        className={
+          'pt-16 h-screen flex flex-col px-6 md:px-8 native-page-in ' + (showThread ? 'pb-3' : 'pb-6')
+        }
+      >
         <div
           className={
             "flex-1 min-h-0 w-full max-w-5xl mx-auto flex flex-col transition-all duration-500 ease-in-out " +
             (!showThread ? 'justify-center gap-10' : 'gap-4')
           }
         >
-          {/* Header central (état vide) */}
           {!showThread && (
             <h1 className="text-4xl font-normal text-gray-900 dark:text-white text-center">
               {emptyTitle}
             </h1>
           )}
 
-          {/* Messages (sans box de fond: même fond que la page) */}
           {showThread && (
             <div className="relative flex-1 min-h-0 w-full mt-8">
               <div
@@ -543,24 +684,62 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
                 <div className="space-y-4 pt-2 pb-24">
                   {messages.map((m, idx) => (
                     <div
-                      key={idx}
+                      key={m.id ?? idx}
                       className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
                     >
                       <div
                         className={
-                          m.role === 'user'
-                            ? 'max-w-[85%] relative overflow-hidden rounded-2xl px-4 py-3 shadow-sm border border-white/55 bg-white/45 text-gray-900 dark:text-white dark:bg-blue-500/18 dark:bg-gradient-to-br dark:from-blue-500/34 dark:to-indigo-800/12 dark:border-blue-200/18 backdrop-blur-md backdrop-saturate-150 ' +
-                              "before:content-[''] before:absolute before:inset-0 before:pointer-events-none before:rounded-[inherit] before:bg-gradient-to-br before:from-white/35 before:to-transparent before:opacity-70 dark:before:from-blue-200/26 dark:before:opacity-95 " +
-                              "after:content-[''] after:absolute after:inset-0 after:pointer-events-none after:rounded-[inherit] after:ring-1 after:ring-white/25 dark:after:ring-blue-200/20"
-                            : 'max-w-[85%] relative overflow-hidden rounded-2xl px-4 py-3 shadow-sm border border-white/40 bg-white/30 text-gray-900 dark:text-white dark:bg-white/10 dark:border-white/12 backdrop-blur-md backdrop-saturate-150'
+                          'max-w-[85%] flex flex-col group ' +
+                          (m.role === 'user' ? 'items-end' : 'items-start')
                         }
                       >
-                        <div className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-0 prose-p:my-2">
-                          <MessageContent content={m.content} />
+                        <div
+                          className={
+                            'relative overflow-hidden rounded-2xl px-4 py-3 shadow-sm backdrop-blur-md backdrop-saturate-150 ' +
+                            'transition-transform duration-200 will-change-transform native-message-in hover:shadow-md ' +
+                            (m.role === 'user'
+                              ? 'border border-white/55 bg-white/45 text-gray-900 dark:text-white dark:bg-blue-500/18 dark:bg-gradient-to-br dark:from-blue-500/34 dark:to-indigo-800/12 dark:border-blue-200/18 hover:-translate-y-[1px] ' +
+                                "before:content-[''] before:absolute before:inset-0 before:pointer-events-none before:rounded-[inherit] before:bg-gradient-to-br before:from-white/35 before:to-transparent before:opacity-70 dark:before:from-blue-200/26 dark:before:opacity-95 " +
+                                "after:content-[''] after:absolute after:inset-0 after:pointer-events-none after:rounded-[inherit] after:ring-1 after:ring-white/25 dark:after:ring-blue-200/20"
+                              : 'border border-white/40 bg-white/30 text-gray-900 dark:text-white dark:bg-white/10 dark:border-white/12 hover:-translate-y-[1px]')
+                          }
+                        >
+                          <div className="prose prose-sm max-w-none dark:prose-invert prose-pre:my-0 prose-p:my-2">
+                            <MessageContent content={m.content} />
+                          </div>
+
+                          {m.role === 'user' && m.attachments && m.attachments.length > 0 && (
+                            <div className="mt-2 text-xs text-gray-700 dark:text-white/70">Fichier uploadé</div>
+                          )}
                         </div>
 
-                        {m.role === 'user' && m.attachments && m.attachments.length > 0 && (
-                          <div className="mt-2 text-xs text-gray-700 dark:text-white/70">Fichier uploadé</div>
+                        {m.role === 'assistant' && (
+                          <div className="mt-1.5 self-end flex items-center gap-3 text-[11px] tracking-wide opacity-0 pointer-events-none translate-y-0.5 transition-all duration-200 group-hover:opacity-100 group-hover:pointer-events-auto group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-y-0 motion-reduce:transition-none">
+                            <button
+                              type="button"
+                              className="native-action-link"
+                              onClick={() => void handleCopyAssistantMessage(idx)}
+                              title="Copier"
+                            >
+                              Copier
+                            </button>
+
+                            <span className="text-gray-400/80 dark:text-white/25 select-none">·</span>
+
+                            <button
+                              type="button"
+                              disabled={
+                                sending ||
+                                idx !== messages.length - 1 ||
+                                messages[idx - 1]?.role !== 'user'
+                              }
+                              className="native-action-link disabled:opacity-40 disabled:cursor-not-allowed"
+                              onClick={() => void handleRegenerateLastAssistant(idx)}
+                              title="Régénérer"
+                            >
+                              Régénérer
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -569,7 +748,7 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
                   {((thinking && sending) || loadingMessages) && (
                     <div className="flex justify-start">
                       <div className="max-w-[85%] rounded-2xl px-4 py-3 shadow-sm border border-white/40 bg-white/30 text-gray-700 dark:text-white/80 dark:bg-white/10 dark:border-white/12 backdrop-blur-md backdrop-saturate-150">
-                        Thinking…
+                        <span className="native-thinking">Thinking…</span>
                       </div>
                     </div>
                   )}
@@ -580,8 +759,12 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
             </div>
           )}
 
-          {/* Input */}
-          <div className={"transition-all duration-500 ease-in-out " + (isEmpty ? '' : 'pb-1')}>
+          <div
+            className={
+              'transition-all duration-300 ease-out transform-gpu ' +
+              (inputDrop ? 'translate-y-2 opacity-[0.98]' : 'translate-y-0 opacity-100')
+            }
+          >
             <ChatInput
               value={input}
               onChange={setInput}
@@ -594,13 +777,13 @@ export default function Chat({ user, onBackHome, onAppClick, onRequireAuth }: Ch
               onFilesSelected={setPendingFiles}
             />
           </div>
-
-          {/* Scroll buttons removed: we style the scrollbar itself instead */}
         </div>
 
-        <div className="pb-4 pt-4">
-          <Footer />
-        </div>
+        {!showThread && (
+          <div className="fixed left-0 right-0 bottom-4 z-[40] pointer-events-none">
+            <Footer />
+          </div>
+        )}
       </main>
     </div>
   );
