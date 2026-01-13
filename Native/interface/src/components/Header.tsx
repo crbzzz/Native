@@ -8,9 +8,10 @@ import { getSfxEnabled, setSfxEnabled } from '../lib/sfx';
 interface HeaderProps {
   onHome?: () => void;
   placement?: 'floating' | 'inline';
+  onSettingsOpenChange?: (open: boolean) => void;
 }
 
-export default function Header({ onHome, placement = 'floating' }: HeaderProps) {
+export default function Header({ onHome, placement = 'floating', onSettingsOpenChange }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setThemeState] = useState<ThemeMode>('light');
   const [sfxEnabled, setSfxEnabledState] = useState(true);
@@ -54,6 +55,10 @@ export default function Header({ onHome, placement = 'floating' }: HeaderProps) 
 
     void run();
   }, [menuOpen]);
+
+  useEffect(() => {
+    onSettingsOpenChange?.(menuOpen);
+  }, [menuOpen, onSettingsOpenChange]);
 
   const handleLogout = async () => {
     await signOut();
