@@ -210,7 +210,7 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
         );
 
   return (
-    <div className={placement === 'inline' ? 'relative' : 'fixed top-4 right-4 z-60'}>
+    <div className={placement === 'inline' ? 'relative z-[70]' : 'fixed top-4 right-4 z-[70]'}>
       <button
         type="button"
         onClick={() => setMenuOpen((v) => !v)}
