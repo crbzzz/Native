@@ -12,10 +12,6 @@ interface HeaderProps {
 }
 
 export default function Header({ onHome, placement = 'floating', onSettingsOpenChange }: HeaderProps) {
-  onSettingsOpenChange?: (open: boolean) => void;
-}
-
-export default function Header({ onHome, onSettingsOpenChange }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setThemeState] = useState<ThemeMode>('light');
   const [sfxEnabled, setSfxEnabledState] = useState(true);
@@ -215,7 +211,6 @@ export default function Header({ onHome, onSettingsOpenChange }: HeaderProps) {
 
   return (
     <div className={placement === 'inline' ? 'relative z-[70]' : 'fixed top-4 right-4 z-[70]'}>
-    <div className="fixed top-4 right-4 z-[70]">
       <button
         type="button"
         onClick={() => setMenuOpen((v) => !v)}
