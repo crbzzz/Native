@@ -1,3 +1,9 @@
+param(
+	[int]$FrontendPort = 5000,
+	[string]$FrontendHost = "0.0.0.0",
+	[int]$BackendPort = 8000
+)
+
 Set-StrictMode -Version Latest
 
 $ErrorActionPreference = "Stop"
@@ -23,5 +29,5 @@ if (-not $pythonExe) {
 	throw "Cannot find python venv. Looked in: $($pythonCandidates -join '; ')"
 }
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$root`"; `"$pythonExe`" -m uvicorn backend.app:app --reload --port 8000"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$root`"; npm --prefix interface run dev"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$root`"; `"$pythonExe`" -m uvicorn backend.app:app --reload --port $BackendPort"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$root`"; npm --prefix interface run dev -- --host $FrontendHost --port $FrontendPort"

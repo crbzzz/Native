@@ -9,7 +9,7 @@ import Sidebar from '../components/Sidebar';
 import Header from '../components/Header';
 import ChatInput from '../components/ChatInput';
 import Footer from '../components/Footer';
-import { sendChat, sendChatPersisted, type ChatMessage } from '../lib/nativeChat';
+import { ChatApiError, sendChat, sendChatPersisted, type ChatMessage } from '../lib/nativeChat';
 import MessageContent from '../components/MessageContent';
 import { sanitizeAssistantText } from '../lib/sanitizeAssistantText';
 import { getMessages } from '../lib/messages';
@@ -33,6 +33,7 @@ interface ChatProps {
   user: any;
   onBackHome: () => void;
   onAppClick: () => void;
+  onPlans: () => void;
   onOpenStudioProject: (conversationId: string) => void;
   onRequireAuth: () => void;
 }
@@ -113,7 +114,7 @@ function readBoolFromStorage(key: string): boolean | undefined {
   }
 }
 
-export default function Chat({ user, onBackHome, onAppClick, onOpenStudioProject, onRequireAuth }: ChatProps) {
+export default function Chat({ user, onBackHome, onAppClick, onPlans, onOpenStudioProject, onRequireAuth }: ChatProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -598,6 +599,23 @@ export default function Chat({ user, onBackHome, onAppClick, onOpenStudioProject
         setSending(false);
       });
     } catch (err) {
+      const isTokenLimit =
+        err instanceof ChatApiError
+          ? err.status === 402 || String(err.code || '').toLowerCase() === 'token_limit_reached'
+          : String((err as any)?.message || '').toLowerCase().includes('token_limit');
+
+      if (isTokenLimit) {
+        setThinking(false);
+        setSending(false);
+        if (sendingWatchdogRef.current) {
+          window.clearTimeout(sendingWatchdogRef.current);
+          sendingWatchdogRef.current = null;
+        }
+        setToast('Token limit reached — choose a plan to get more tokens.');
+        onPlans();
+        return;
+      }
+
       const msg = err instanceof Error ? err.message : 'Failed to contact server';
 
       const normalized = String(msg || '').toLowerCase();
@@ -687,6 +705,19 @@ export default function Chat({ user, onBackHome, onAppClick, onOpenStudioProject
         setSending(false);
       });
     } catch (err) {
+      const isTokenLimit =
+        err instanceof ChatApiError
+          ? err.status === 402 || String(err.code || '').toLowerCase() === 'token_limit_reached'
+          : String((err as any)?.message || '').toLowerCase().includes('token_limit');
+
+      if (isTokenLimit) {
+        setThinking(false);
+        setSending(false);
+        setToast('Token limit reached — choose a plan to get more tokens.');
+        onPlans();
+        return;
+      }
+
       const msg = err instanceof Error ? err.message : 'Failed to contact server';
       setThinking(false);
       setSending(false);
@@ -745,7 +776,7 @@ export default function Chat({ user, onBackHome, onAppClick, onOpenStudioProject
         onDeleteConversation={handleDelete}
         onOpenStudioProject={onOpenStudioProject}
       />
-      <Header onHome={onBackHome} onSettingsOpenChange={setSettingsOpen} />
+      <Header onHome={onBackHome} onSettingsOpenChange={setSettingsOpen} onGetStarted={onPlans} />
 
       <main
         className={

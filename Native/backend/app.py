@@ -6,6 +6,7 @@ import base64
 import tempfile
 import subprocess
 import traceback
+import urllib.parse
 from typing import List, Optional
 
 try:
@@ -15,7 +16,7 @@ except Exception:  # pragma: no cover
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Form, Header
+from fastapi import FastAPI, UploadFile, File, Form, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -171,6 +172,81 @@ async def _supabase_rest_insert(table: str, payload: object) -> object:
         return r.json()
 
 
+FREE_TOKEN_CAP = 25_000
+PRO_TOKEN_CAP = 500_000
+TOPUP_250K = 250_000
+
+
+def _month_key(dt: datetime.datetime | None = None) -> str:
+    d = dt or datetime.datetime.utcnow()
+    return d.strftime("%Y-%m")
+
+
+def _iso_week_key(dt: datetime.datetime | None = None) -> str:
+    d = dt or datetime.datetime.utcnow()
+    y, w, _ = d.isocalendar()
+    return f"{int(y)}-W{int(w):02d}"
+
+
+async def _get_user_plan(user_id: str) -> str:
+    try:
+        rows = await _supabase_rest_get("user_plans", f"select=plan&user_id=eq.{user_id}&limit=1")
+        row = rows[0] if isinstance(rows, list) and rows else None
+        plan = str((row or {}).get("plan") or "").strip().lower()
+        return plan if plan in {"free", "pro"} else "free"
+    except Exception:
+        return "free"
+
+
+async def _get_token_cap(user_id: str, plan: str, period: str) -> int:
+    """Returns token cap for user for a given period key.
+
+    Default: Free=25k/week, Pro=500k/month.
+    If the Supabase RPC `get_token_cap` exists, uses it to support plans + top-ups.
+    """
+
+    base = PRO_TOKEN_CAP if plan == "pro" else FREE_TOKEN_CAP
+
+    # Prefer new signature: (p_user_id, p_period)
+    try:
+        cap = await _supabase_rpc("get_token_cap", {"p_user_id": user_id, "p_period": period})
+        cap_int = int(cap) if cap is not None else base
+        return max(0, cap_int)
+    except Exception:
+        pass
+
+    # Backward compat: old signature (p_month)
+    try:
+        cap = await _supabase_rpc("get_token_cap", {"p_user_id": user_id, "p_month": period})
+        cap_int = int(cap) if cap is not None else base
+        return max(0, cap_int)
+    except Exception:
+        return base
+
+
+async def _get_tokens_used(user_id: str, plan: str, period: str) -> int:
+    try:
+        if plan == "pro":
+            used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": period})
+        else:
+            used = await _supabase_rpc("get_tokens_used_week", {"p_user_id": user_id, "p_week": period})
+        return int(used) if used is not None else 0
+    except Exception:
+        return 0
+
+
+async def _add_tokens_used(user_id: str, plan: str, period: str, tokens: int) -> None:
+    try:
+        if plan == "pro":
+            await _supabase_rpc("add_tokens", {"p_user_id": user_id, "p_month": period, "p_tokens": int(tokens)})
+        else:
+            await _supabase_rpc(
+                "add_tokens_week", {"p_user_id": user_id, "p_week": period, "p_tokens": int(tokens)}
+            )
+    except Exception:
+        return
+
+
 @app.get("/api/conversations/{conversation_id}/messages")
 async def conversation_messages(conversation_id: str, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -207,9 +283,12 @@ async def conversation_messages(conversation_id: str, authorization: Optional[st
 
 @app.get("/api/usage")
 async def usage(authorization: Optional[str] = Header(None)):
-    """Retourne la consommation tokens du mois pour l'utilisateur courant.
+    """Retourne la consommation tokens pour la période courante.
 
-    Réponse: { month, cap, used, remaining }
+    Free: reset hebdo (YYYY-Www)
+    Pro: reset mensuel (YYYY-MM)
+
+    Réponse: { month, cap, used, remaining } (month est une clé de période)
     """
 
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -221,17 +300,103 @@ async def usage(authorization: Optional[str] = Header(None)):
     except Exception:
         return JSONResponse(status_code=401, content={"error": "invalid_auth"})
 
-    month = datetime.datetime.utcnow().strftime("%Y-%m")
-    cap = 10_000
+    plan = await _get_user_plan(user_id)
+    period = _month_key() if plan == "pro" else _iso_week_key()
+    cap = await _get_token_cap(user_id, plan, period)
+    used_int = await _get_tokens_used(user_id, plan, period)
+
+    remaining = max(0, int(cap) - int(used_int))
+    return {"month": period, "cap": int(cap), "used": int(used_int), "remaining": int(remaining), "plan": plan}
+
+
+@app.get("/api/billing/plans")
+async def billing_plans():
+    """Public metadata for UI rendering (Stripe integration lives in checkout-session + webhook)."""
+
+    return {
+        "plans": [
+            {"id": "free", "name": "Free", "price": 0, "interval": "week", "cap": FREE_TOKEN_CAP},
+            {"id": "pro", "name": "Pro", "price": 15, "interval": "month", "cap": PRO_TOKEN_CAP},
+            {"id": "topup_250k", "name": "Token Pack", "price": 10, "interval": "once", "tokens": TOPUP_250K},
+        ]
+    }
+
+
+@app.post("/api/billing/checkout-session")
+async def billing_checkout_session(payload: dict, authorization: Optional[str] = Header(None)):
+    """Stripe-ready endpoint.
+
+    Expected payload: { kind: 'pro_monthly' | 'topup_250k' }
+
+    In production, this should create a Stripe Checkout Session and return { url }.
+    """
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    kind = str((payload or {}).get("kind") or "").strip().lower()
+    if kind not in {"pro_monthly", "topup_250k"}:
+        return JSONResponse(status_code=400, content={"error": "invalid_kind"})
+
+    # Optional dev-mode: grant instantly without Stripe (so UI can be tested end-to-end).
+    dev_grant = str(os.getenv("BILLING_DEV_GRANT", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if dev_grant:
+        plan = await _get_user_plan(user_id)
+        period = _month_key() if plan == "pro" else _iso_week_key()
+        try:
+            if kind == "pro_monthly":
+                await _supabase_rpc("set_user_plan", {"p_user_id": user_id, "p_plan": "pro"})
+            if kind == "topup_250k":
+                await _supabase_rpc(
+                    "add_period_allowance",
+                    {"p_user_id": user_id, "p_period": period, "p_tokens": TOPUP_250K},
+                )
+        except Exception:
+            pass
+        return {"url": "/plans"}
+
+    # If we don't have a webhook configured, we cannot apply entitlements after payment.
+    # Avoid sending users to Stripe and then "nothing happens".
+    stripe_webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET") or ""
+    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY") or ""
+    if not stripe_webhook_secret.strip() or not stripe_secret_key.strip():
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": "stripe_webhook_not_configured",
+                "detail": (
+                    "Stripe webhook is not configured, so purchases cannot be applied automatically. "
+                    "For local testing, set BILLING_DEV_GRANT=1. "
+                    "For real payments, configure STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET and a webhook endpoint."
+                ),
+            },
+        )
+
+    # Payment Links mode (no server-side Checkout Session creation required).
+    # NOTE: To actually grant plan/tokens after payment, configure the Stripe webhook.
+    payment_link_pro = os.getenv("STRIPE_PAYMENT_LINK_PRO") or "https://buy.stripe.com/9B6aEW5dr8s9dqj2nt14401"
+    payment_link_topup = os.getenv("STRIPE_PAYMENT_LINK_TOPUP_250K") or "https://buy.stripe.com/bJe14mbBP6k171VaTZ14402"
+    url = payment_link_pro if kind == "pro_monthly" else payment_link_topup
 
     try:
-        used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": month})
-        used_int = int(used) if used is not None else 0
+        if email:
+            parsed = urllib.parse.urlparse(url)
+            q = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+            q["prefilled_email"] = str(email)
+            url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(q)))
     except Exception:
-        used_int = 0
+        pass
 
-    remaining = max(0, cap - used_int)
-    return {"month": month, "cap": cap, "used": used_int, "remaining": remaining}
+    return {"url": url}
+
+
+    # (Unused for now): server-side Checkout Sessions could be added later.
 
 
 @app.get("/api/admin/stats")
@@ -291,6 +456,211 @@ async def admin_stats(authorization: Optional[str] = Header(None)):
         "totalUsers": total_users,
         "tokensByMonth": tokens_by_month,
     }
+
+
+@app.post("/api/admin/set-plan")
+async def admin_set_plan(request: Request, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        _user_id, email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    _, _, _, admin_emails = _get_supabase_settings()
+    if not email or email.lower() not in set(admin_emails):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+
+    payload = await request.json()
+    target_email = str(payload.get("email") or "").strip().lower()
+    plan = str(payload.get("plan") or "free").strip().lower()
+    if plan not in {"free", "pro"}:
+        plan = "free"
+
+    if not target_email:
+        return JSONResponse(status_code=400, content={"error": "bad_request", "detail": "Missing email"})
+
+    try:
+        user_id = await _supabase_rpc("admin_user_id_by_email", {"p_email": target_email})
+        user_id_str = str(user_id or "").strip()
+        if not user_id_str:
+            return JSONResponse(status_code=404, content={"error": "not_found", "detail": "User not found"})
+
+        out_plan = await _supabase_rpc("set_user_plan", {"p_user_id": user_id_str, "p_plan": plan})
+        return {"ok": True, "email": target_email, "plan": str(out_plan or plan)}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": "admin_set_plan_failed", "detail": str(exc)})
+
+
+@app.post("/api/admin/grant-tokens")
+async def admin_grant_tokens(request: Request, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        _user_id, email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    _, _, _, admin_emails = _get_supabase_settings()
+    if not email or email.lower() not in set(admin_emails):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+
+    payload = await request.json()
+    target_email = str(payload.get("email") or "").strip().lower()
+    tokens_raw = payload.get("tokens")
+    try:
+        tokens = int(tokens_raw)
+    except Exception:
+        tokens = 0
+
+    if not target_email:
+        return JSONResponse(status_code=400, content={"error": "bad_request", "detail": "Missing email"})
+    if tokens <= 0:
+        return JSONResponse(status_code=400, content={"error": "bad_request", "detail": "Tokens must be > 0"})
+
+    try:
+        user_id = await _supabase_rpc("admin_user_id_by_email", {"p_email": target_email})
+        user_id_str = str(user_id or "").strip()
+        if not user_id_str:
+            return JSONResponse(status_code=404, content={"error": "not_found", "detail": "User not found"})
+
+        plan = await _get_user_plan(user_id_str)
+        period = _month_key() if plan == "pro" else _iso_week_key()
+
+        added = await _supabase_rpc(
+            "add_period_allowance",
+            {"p_user_id": user_id_str, "p_period": period, "p_tokens": int(tokens)},
+        )
+
+        return {
+            "ok": True,
+            "email": target_email,
+            "plan": plan,
+            "period": period,
+            "tokensAddedTotal": int(added or 0),
+        }
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": "admin_grant_tokens_failed", "detail": str(exc)})
+
+
+@app.post("/api/billing/webhook")
+async def stripe_webhook(request: Request):
+    """Stripe webhook for Payment Links / Checkout.
+
+    Requires:
+    - STRIPE_SECRET_KEY
+    - STRIPE_WEBHOOK_SECRET
+    """
+
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET") or ""
+    api_key = os.getenv("STRIPE_SECRET_KEY") or ""
+    if not secret.strip() or not api_key.strip():
+        return JSONResponse(status_code=501, content={"error": "stripe_not_configured"})
+
+    try:
+        import stripe  # type: ignore
+    except Exception:
+        return JSONResponse(status_code=500, content={"error": "stripe_missing_dependency", "detail": "Install stripe"})
+
+    stripe.api_key = api_key
+
+    sig = request.headers.get("stripe-signature") or request.headers.get("Stripe-Signature")
+    if not sig:
+        return JSONResponse(status_code=400, content={"error": "missing_signature"})
+
+    payload = await request.body()
+
+    try:
+        event = stripe.Webhook.construct_event(payload=payload, sig_header=sig, secret=secret)
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": "invalid_signature", "detail": str(exc)})
+
+    etype = str(getattr(event, "type", "") or "")
+
+    async def resolve_user_id(email: str | None) -> str | None:
+        e = (email or "").strip().lower()
+        if not e:
+            return None
+        try:
+            uid = await _supabase_rpc("admin_user_id_by_email", {"p_email": e})
+            uid_str = str(uid or "").strip()
+            return uid_str or None
+        except Exception:
+            return None
+
+    async def grant_pack(uid: str) -> None:
+        plan = await _get_user_plan(uid)
+        period = _month_key() if plan == "pro" else _iso_week_key()
+        try:
+            await _supabase_rpc(
+                "add_period_allowance",
+                {"p_user_id": uid, "p_period": period, "p_tokens": int(TOPUP_250K)},
+            )
+        except Exception:
+            return
+
+    async def set_plan(uid: str, plan: str) -> None:
+        try:
+            await _supabase_rpc("set_user_plan", {"p_user_id": uid, "p_plan": plan})
+        except Exception:
+            return
+
+    try:
+        if etype == "checkout.session.completed":
+            session = event["data"]["object"]
+            mode = str(session.get("mode") or "")
+            cd = session.get("customer_details") or {}
+            email = cd.get("email") or session.get("customer_email")
+            uid = await resolve_user_id(email)
+            if not uid:
+                return {"ok": True}
+
+            if mode == "subscription":
+                await set_plan(uid, "pro")
+                return {"ok": True}
+
+            # One-time payments: treat $10 as the 250k pack.
+            amount_total = session.get("amount_total")
+            currency = str(session.get("currency") or "").lower()
+            if currency == "usd" and int(amount_total or 0) == 1000:
+                await grant_pack(uid)
+            return {"ok": True}
+
+        if etype == "customer.subscription.deleted":
+            sub = event["data"]["object"]
+            customer_id = sub.get("customer")
+            if customer_id:
+                try:
+                    cust = stripe.Customer.retrieve(customer_id)
+                    email = (cust or {}).get("email")
+                except Exception:
+                    email = None
+                uid = await resolve_user_id(email)
+                if uid:
+                    await set_plan(uid, "free")
+            return {"ok": True}
+
+        if etype == "invoice.paid":
+            inv = event["data"]["object"]
+            customer_id = inv.get("customer")
+            if customer_id:
+                try:
+                    cust = stripe.Customer.retrieve(customer_id)
+                    email = (cust or {}).get("email")
+                except Exception:
+                    email = None
+                uid = await resolve_user_id(email)
+                if uid:
+                    await set_plan(uid, "pro")
+            return {"ok": True}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": "webhook_failed", "detail": str(exc)})
+
+    return {"ok": True}
 
 
 # CORS (utile si l'interface Vite tourne sur un autre port en dev)
@@ -381,22 +751,19 @@ async def chat(
     except Exception:
         return JSONResponse(status_code=401, content={"error": "invalid_auth"})
 
-    month = datetime.datetime.utcnow().strftime("%Y-%m")
+    plan = await _get_user_plan(user_id)
+    period = _month_key() if plan == "pro" else _iso_week_key()
+    token_cap = await _get_token_cap(user_id, plan, period)
+    used_int = await _get_tokens_used(user_id, plan, period)
 
-    # Limite mensuelle (10k tokens)
-    try:
-        used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": month})
-        used_int = int(used) if used is not None else 0
-    except Exception:
-        used_int = 0
-
-    TOKEN_CAP = 10_000
-    if used_int >= TOKEN_CAP:
+    if used_int >= token_cap:
         return JSONResponse(
             status_code=402,
             content={
                 "error": "token_limit_reached",
-                "detail": f"Limite mensuelle atteinte ({TOKEN_CAP} tokens).",
+                "detail": f"Limite atteinte ({token_cap} tokens) pour la période {period}.",
+                "period": period,
+                "plan": plan,
             },
         )
 
@@ -635,14 +1002,7 @@ async def chat(
         approx_chars += len(str(assistant_reply or ""))
         total_tokens = max(1, int(approx_chars / 4))
 
-    try:
-        added = await _supabase_rpc(
-            "add_tokens",
-            {"p_user_id": user_id, "p_month": month, "p_tokens": int(total_tokens)},
-        )
-        new_total = int(added) if added is not None else None
-    except Exception:
-        new_total = None
+    await _add_tokens_used(user_id, plan, period, int(total_tokens))
 
     out: dict = {"reply": assistant_reply}
     if persist_enabled and conv_id:
@@ -938,25 +1298,20 @@ async def transcribe_audio(
         user_id, _email = await _supabase_get_user_id(access_token)
     except Exception:
         return JSONResponse(status_code=401, content={"error": "invalid_auth"})
-
-    month = datetime.datetime.utcnow().strftime("%Y-%m")
-
     try:
 
-        # Limite mensuelle (10k tokens)
-        try:
-            used = await _supabase_rpc("get_tokens_used", {"p_user_id": user_id, "p_month": month})
-            used_int = int(used) if used is not None else 0
-        except Exception:
-            used_int = 0
-
-        TOKEN_CAP = 10_000
-        if used_int >= TOKEN_CAP:
+        plan = await _get_user_plan(user_id)
+        period = _month_key() if plan == "pro" else _iso_week_key()
+        token_cap = await _get_token_cap(user_id, plan, period)
+        used_int = await _get_tokens_used(user_id, plan, period)
+        if used_int >= token_cap:
             return JSONResponse(
                 status_code=402,
                 content={
                     "error": "token_limit_reached",
-                    "detail": f"Limite mensuelle atteinte ({TOKEN_CAP} tokens).",
+                    "detail": f"Limite atteinte ({token_cap} tokens) pour la période {period}.",
+                    "period": period,
+                    "plan": plan,
                 },
             )
 
@@ -1070,13 +1425,7 @@ async def transcribe_audio(
             approx_source = fr or spoken
             total_tokens = max(1, int(len(approx_source) / 4))
 
-        try:
-            await _supabase_rpc(
-                "add_tokens",
-                {"p_user_id": user_id, "p_month": month, "p_tokens": int(total_tokens)},
-            )
-        except Exception:
-            pass
+        await _add_tokens_used(user_id, plan, period, int(total_tokens))
 
         return {"spoken": spoken, "text": fr}
 

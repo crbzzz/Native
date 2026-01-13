@@ -5,17 +5,20 @@ import { getAccessToken, signOut } from '../lib/auth';
 import { getStoredTheme, setTheme, type ThemeMode } from '../lib/theme';
 import { getSfxEnabled, setSfxEnabled } from '../lib/sfx';
 
+type PlanId = 'free' | 'pro';
+
 interface HeaderProps {
   onHome?: () => void;
   placement?: 'floating' | 'inline';
   onSettingsOpenChange?: (open: boolean) => void;
+  onGetStarted?: () => void;
 }
 
-export default function Header({ onHome, placement = 'floating', onSettingsOpenChange }: HeaderProps) {
+export default function Header({ onHome, placement = 'floating', onSettingsOpenChange, onGetStarted }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setThemeState] = useState<ThemeMode>('light');
   const [sfxEnabled, setSfxEnabledState] = useState(true);
-  const [quota, setQuota] = useState<{ month: string; cap: number; used: number; remaining: number } | null>(null);
+  const [quota, setQuota] = useState<{ month: string; cap: number; used: number; remaining: number; plan?: PlanId } | null>(null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
 
   const modelOptions = useMemo(() => [{ id: 'mistral-small-latest', label: 'mistral-small-latest' }], []);
@@ -28,7 +31,7 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
 
   useEffect(() => {
     const run = async () => {
-      if (!menuOpen) return;
+      if (!menuOpen && !onGetStarted) return;
       setQuotaError(null);
 
       const token = await getAccessToken();
@@ -45,7 +48,7 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
           const text = await res.text().catch(() => '');
           throw new Error(text || `HTTP ${res.status}`);
         }
-        const data = (await res.json()) as { month: string; cap: number; used: number; remaining: number };
+        const data = (await res.json()) as { month: string; cap: number; used: number; remaining: number; plan?: PlanId };
         setQuota(data);
       } catch (e) {
         setQuota(null);
@@ -54,7 +57,9 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
     };
 
     void run();
-  }, [menuOpen]);
+  }, [menuOpen, onGetStarted]);
+
+  const getStartedLabel = quota?.plan === 'pro' ? 'PRO' : 'Get started';
 
   useEffect(() => {
     onSettingsOpenChange?.(menuOpen);
@@ -160,7 +165,7 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
                         <p className="text-sm text-gray-900 dark:text-gray-100">Tokens restants</p>
                         <p className="text-xs text-gray-600 dark:text-gray-300">
                           {quota
-                            ? `${quota.remaining} / ${quota.cap} (mois ${quota.month})`
+                            ? `${quota.remaining} / ${quota.cap} (période ${quota.month})`
                             : quotaError
                               ? 'Impossible de charger la quota'
                               : 'Connecte-toi pour voir ta quota'}
@@ -179,6 +184,19 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
                       )}
                     </div>
                   </div>
+
+                  {quota && quota.remaining <= 0 && onGetStarted && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onGetStarted();
+                      }}
+                      className="w-full px-4 py-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white transition-colors text-sm font-semibold"
+                    >
+                      Get more tokens
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -211,17 +229,33 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
 
   return (
     <div className={placement === 'inline' ? 'relative z-[70]' : 'fixed top-4 right-4 z-[70]'}>
-      <button
-        type="button"
-        onClick={() => setMenuOpen((v) => !v)}
-        className={
-          (placement === 'inline' ? 'w-9 h-9 ' : 'w-10 h-10 ') +
-          'flex items-center justify-center bg-white/30 text-gray-900 dark:text-gray-100 border border-white/40 dark:border-white/15 rounded-full hover:bg-white/40 transition-colors backdrop-blur-md'
-        }
-        title="Settings"
-      >
-        <User size={20} />
-      </button>
+      <div className="flex items-center gap-2">
+        {onGetStarted && (
+          <button
+            type="button"
+            onClick={onGetStarted}
+            className={
+              'inline-flex items-center justify-center px-3.5 py-2 rounded-full ' +
+              'bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold ' +
+              'shadow-sm transition-colors'
+            }
+          >
+            {getStartedLabel}
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          className={
+            (placement === 'inline' ? 'w-9 h-9 ' : 'w-10 h-10 ') +
+            'flex items-center justify-center bg-white/30 text-gray-900 dark:text-gray-100 border border-white/40 dark:border-white/15 rounded-full hover:bg-white/40 transition-colors backdrop-blur-md'
+          }
+          title="Settings"
+        >
+          <User size={20} />
+        </button>
+      </div>
 
       {settingsModal}
     </div>

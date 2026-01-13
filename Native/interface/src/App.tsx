@@ -8,7 +8,7 @@ import RedM from './pages/RedM';
 import FiveM from './pages/FiveM';
 import Admin from './pages/Admin';
 import Documentation from './pages/Documentation';
-import Pricing from './pages/Pricing';
+import Plans from './pages/Plans';
 import Changelog from './pages/Changelog';
 import { onAuthStateChange } from './lib/auth';
 import { applyTheme, getStoredTheme } from './lib/theme';
@@ -18,7 +18,17 @@ const AUTH_DISABLED = false;
 
 type AppKey = 'redm' | 'fivem';
 
-type PageType = 'home' | 'chat' | 'apps' | 'studio' | 'docs' | 'pricing' | 'changelog' | 'admin' | 'admin_login' | AppKey;
+type PageType =
+  | 'home'
+  | 'chat'
+  | 'apps'
+  | 'studio'
+  | 'docs'
+  | 'plans'
+  | 'changelog'
+  | 'admin'
+  | 'admin_login'
+  | AppKey;
 
 function pageFromPath(pathname: string): PageType {
   const p = (pathname || '/').toLowerCase();
@@ -28,7 +38,7 @@ function pageFromPath(pathname: string): PageType {
   if (p === '/apps') return 'apps';
   if (p === '/studio') return 'studio';
   if (p === '/docs') return 'docs';
-  if (p === '/pricing') return 'pricing';
+  if (p === '/plans' || p === '/pricing') return 'plans';
   if (p === '/changelog') return 'changelog';
   if (p === '/redm') return 'redm';
   if (p === '/fivem') return 'fivem';
@@ -42,7 +52,7 @@ function pathFromPage(page: PageType): string {
   if (page === 'apps') return '/apps';
   if (page === 'studio') return '/studio';
   if (page === 'docs') return '/docs';
-  if (page === 'pricing') return '/pricing';
+  if (page === 'plans') return '/plans';
   if (page === 'changelog') return '/changelog';
   if (page === 'redm') return '/redm';
   if (page === 'fivem') return '/fivem';
@@ -222,7 +232,7 @@ function App() {
               onApps={() => navigate('apps')}
               onOpenAuth={() => setShowAuth(true)}
               onDocs={() => navigate('docs')}
-              onPricing={() => navigate('pricing')}
+              onPricing={() => navigate('plans')}
               onChangelog={() => navigate('changelog')}
             />
           )}
@@ -231,6 +241,7 @@ function App() {
               user={AUTH_DISABLED ? { id: 'disabled' } : user}
               onBackHome={() => navigate('home')}
               onAppClick={() => navigate('apps')}
+              onPlans={() => navigate('plans')}
               onOpenStudioProject={(conversationId) => {
                 try {
                   window.localStorage.setItem('native:studio:openConversationId', conversationId);
@@ -255,7 +266,7 @@ function App() {
           )}
 
           {currentPage === 'docs' && <Documentation onBack={() => navigate('home')} />}
-          {currentPage === 'pricing' && <Pricing onBack={() => navigate('home')} />}
+          {currentPage === 'plans' && <Plans onBack={() => navigate('home')} />}
           {currentPage === 'changelog' && <Changelog onBack={() => navigate('home')} />}
 
           {currentPage === 'studio' && <CodeStudio onBack={() => navigate('apps')} />}
