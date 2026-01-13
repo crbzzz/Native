@@ -17,7 +17,7 @@ type CatalogApp = {
   description: string;
   icon: LucideIcon;
   gradient: string;
-  badge?: 'Nouveau' | 'Pro' | 'Populaire';
+  badge?: 'New' | 'Pro' | 'Popular';
   key: 'studio' | 'redm' | 'fivem';
 };
 
@@ -28,16 +28,16 @@ export default function Apps({ onBack, onOpenApp }: AppsProps) {
         id: 'studio',
         key: 'studio',
         name: 'Code Studio',
-        description: 'Génère un projet complet en plusieurs fichiers, prêts à télécharger.',
+        description: 'Generate a complete multi-file project, ready to download.',
         icon: Sparkles,
         gradient: 'from-sky-500 to-fuchsia-500',
-        badge: 'Populaire',
+        badge: 'Popular',
       },
       {
         id: 'fivem',
         key: 'fivem',
         name: 'FiveM Studio',
-        description: 'Génère une resource complète (ESX / QBCore / Qbox / vRP).',
+        description: 'Generate a complete resource (ESX / QBCore / Qbox / vRP).',
         icon: Code2,
         gradient: 'from-sky-500 to-cyan-400',
       },
@@ -45,7 +45,7 @@ export default function Apps({ onBack, onOpenApp }: AppsProps) {
         id: 'redm',
         key: 'redm',
         name: 'RedM Studio',
-        description: 'Génère une resource complète (VORP / RSG).',
+        description: 'Generate a complete resource (VORP / RSG).',
         icon: Code2,
         gradient: 'from-fuchsia-500 to-pink-500',
       },
@@ -61,7 +61,7 @@ export default function Apps({ onBack, onOpenApp }: AppsProps) {
           className="flex items-center gap-2 text-gray-700 hover:text-gray-900 dark:text-white/70 dark:hover:text-white transition-colors"
         >
           <ArrowLeft size={20} />
-          <span>Retour</span>
+          <span>Back</span>
         </button>
       </div>
 
@@ -75,7 +75,7 @@ export default function Apps({ onBack, onOpenApp }: AppsProps) {
               </span>
             </h1>
             <p className="mt-2 text-sm sm:text-base text-gray-700/90 dark:text-white/70">
-              Ouvre un studio et génère tes fichiers.
+              Open a studio and generate your files.
             </p>
           </div>
 
@@ -132,7 +132,7 @@ function AppCard({ app, onOpen }: { app: CatalogApp; onOpen: () => void }) {
         <div className="mt-auto pt-5 flex items-center justify-between">
           <span className="text-xs text-gray-600 dark:text-white/55">Studio</span>
           <span className="text-sm font-medium text-gray-900 dark:text-white group-hover:translate-x-0.5 transition-transform">
-            Ouvrir →
+            Open →
           </span>
         </div>
       </div>

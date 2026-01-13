@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft, GripVertical, MoreVertical, Search, X } from 'lucide-react';
 import ChatInput from '../components/ChatInput';
 import MessageContent from '../components/MessageContent';
 import Header from '../components/Header';
 import { sendChat, type ChatMessage } from '../lib/nativeChat';
+import { sendChatPersisted } from '../lib/nativeChat';
 import { sanitizeAssistantText } from '../lib/sanitizeAssistantText';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 import JSZip from 'jszip';
+import { getMessages } from '../lib/messages';
 
 type FrameworkOption = {
   id: string;
@@ -111,6 +114,7 @@ type Props = {
   mode?: 'framework' | 'code';
   showPersonalMenu?: boolean;
   showTopBar?: boolean;
+  initialConversationId?: string;
 };
 
 type SplitDrag = {
@@ -119,6 +123,8 @@ type SplitDrag = {
   containerLeft: number;
   containerWidth: number;
 };
+
+type Point = { x: number; y: number };
 
 function toDownloadName(path: string): string {
   const cleaned = (path || '').trim();
@@ -145,6 +151,18 @@ function downloadBlobFile(filename: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
+function projectTitleFromPrompt(prompt: string): string {
+  const cleaned = (prompt || '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[`"'\[\]{}()]/g, '')
+    .replace(/[,:;.!?]+/g, ' ')
+    .trim();
+
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'Project';
+  return parts.slice(0, 4).join(' ');
+}
+
 export default function FrameworkStudio({
   title,
   onBack,
@@ -153,6 +171,7 @@ export default function FrameworkStudio({
   mode = 'framework',
   showPersonalMenu,
   showTopBar,
+  initialConversationId,
 }: Props) {
   const hasFrameworks = Array.isArray(frameworks) && frameworks.length > 0;
   const initialFrameworkId = (defaultFrameworkId && defaultFrameworkId.trim()) || (frameworks?.[0]?.id ?? '');
@@ -170,6 +189,13 @@ export default function FrameworkStudio({
   const [zipping, setZipping] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [projectConversationId, setProjectConversationId] = useState<string | null>(initialConversationId ?? null);
+  const [codeContextMenu, setCodeContextMenu] = useState<Point | null>(null);
+  const [fileContextMenu, setFileContextMenu] = useState<(Point & { name: string }) | null>(null);
+
+  const contextMenuPortalTarget = typeof document !== 'undefined' ? document.body : null;
+
+  const fileUploadRef = useRef<HTMLInputElement | null>(null);
 
   const fileAnimTokenRef = useRef(0);
 
@@ -273,6 +299,26 @@ export default function FrameworkStudio({
 
   const normalizedPath = (p: string) => (p || '').replace(/\\/g, '/');
 
+  const clampMenuPoint = (p: Point, menuW = 240, menuH = 140): Point => {
+    const w = typeof window !== 'undefined' ? window.innerWidth : 1200;
+    const h = typeof window !== 'undefined' ? window.innerHeight : 800;
+    const x = p.x > w - menuW - 8 ? p.x - menuW : p.x;
+    const y = p.y > h - menuH - 8 ? p.y - menuH : p.y;
+    return { x: Math.max(8, x), y: Math.max(8, y) };
+  };
+
+  const openCodeContextMenu = (p: Point) => {
+    setCodeContextMenu(clampMenuPoint(p));
+    setFileContextMenu(null);
+    setActionsOpen(false);
+  };
+
+  const openFileContextMenu = (p: Point, name: string) => {
+    setFileContextMenu({ ...clampMenuPoint(p), name });
+    setCodeContextMenu(null);
+    setActionsOpen(false);
+  };
+
   const filteredFiles = useMemo(() => {
     const q = fileFilter.trim().toLowerCase();
     if (!q) return files;
@@ -305,30 +351,30 @@ export default function FrameworkStudio({
     // Cancel any ongoing progressive file writing.
     fileAnimTokenRef.current += 1;
 
-    const userApiPrefix =
-      (mode === 'code'
-        ? `Application: ${title}\n\n` +
-          "Ta mission: produire plusieurs fichiers pour un projet (structure + code).\n" +
-          'Réponds STRICTEMENT en JSON valide, sans Markdown: ' +
-          '{"message":"(court)","files":[{"path":"chemin/nom.ext","content":"contenu du fichier"}]}\n' +
-          'Règles: files[].path obligatoire si tu crées un fichier. content = code brut.\n\n'
-        : `Plateforme: ${title}\nFramework: ${framework?.label ?? ''}\n\n` +
-          "Ta mission: produire des fichiers pour un resource (ex: fxmanifest + client/server + config).\n" +
-          'Réponds STRICTEMENT en JSON valide, sans Markdown: ' +
-          '{"message":"(court)","files":[{"path":"chemin/nom.ext","content":"contenu du fichier"}]}\n' +
-          'Règles: files[].path obligatoire si tu crées un fichier. content = code brut.\n\n');
-
+    const outputRules =
+      'Réponds STRICTEMENT en JSON valide, sans Markdown: ' +
+      '{"message":"(court)","files":[{"path":"chemin/nom.ext","content":"contenu du fichier"}]}.\n' +
+      'Règles: files[].path obligatoire si tu crées un fichier. content = code brut.';
 
     const perAppSystemPrompt =
-      (mode === 'code'
-        ? `Tu es Native AI, un assistant spécialisé dans la génération de code.\n` +
-          `Contexte: application ${title}.\n` +
+      mode === 'code'
+        ? `Tu es Native AI, un assistant spécialisé dans la génération de projets.\n` +
+          `Contexte: Code Studio (${title}).\n` +
           `Objectif: proposer une structure propre et du code utilisable.\n` +
+          `${outputRules}\n` +
           `Réponds en français, clair et concis.`
         : `Tu es Native AI, un assistant spécialisé dans la génération de resources.\n` +
           `Contexte: application ${title}, framework ${framework?.label ?? ''}.\n` +
           `Objectif: proposer une structure propre et du code utilisable.\n` +
-          `Réponds en français, clair et concis.`);
+          `${outputRules}\n` +
+          `Réponds en français, clair et concis.`;
+
+    const userApiPrefix =
+      mode === 'code'
+        ? ''
+        : `Plateforme: ${title}\nFramework: ${framework?.label ?? ''}\n\n` +
+          "Ta mission: produire des fichiers pour un resource (ex: fxmanifest + client/server + config).\n" +
+          `${outputRules}\n\n`;
     const nextMessages: StudioMessage[] = [
       ...messages,
       { role: 'user', display: text, api: userApiPrefix + text },
@@ -340,8 +386,28 @@ export default function FrameworkStudio({
     setThinking(true);
 
     try {
-      const apiMessages: ChatMessage[] = nextMessages.map((m) => ({ role: m.role, content: m.api }));
-      const raw = await sendChat(apiMessages, { systemPrompt: perAppSystemPrompt });
+      const apiMessages: ChatMessage[] =
+        mode === 'code'
+          ? nextMessages.map((m) => ({ role: m.role, content: m.display }))
+          : nextMessages.map((m) => ({ role: m.role, content: m.api }));
+
+      let raw: string;
+      if (mode === 'code') {
+        const res = await sendChatPersisted(apiMessages, {
+          systemPrompt: perAppSystemPrompt,
+          conversationId: projectConversationId ?? undefined,
+          conversationTitle: projectConversationId
+            ? undefined
+            : `[Code Studio] ${projectTitleFromPrompt(text)}`,
+        });
+        raw = res.reply;
+        if (res.conversationId && !projectConversationId) {
+          setProjectConversationId(res.conversationId);
+        }
+      } else {
+        raw = await sendChat(apiMessages, { systemPrompt: perAppSystemPrompt });
+      }
+
       const assistant = sanitizeAssistantText(raw);
 
       const jsonText = extractJsonObject(assistant);
@@ -423,6 +489,7 @@ export default function FrameworkStudio({
       requestAnimationFrame(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
       });
+
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setMessages((prev) => [
@@ -438,6 +505,71 @@ export default function FrameworkStudio({
       setSending(false);
     }
   };
+
+  useEffect(() => {
+    if (mode !== 'code') return;
+    if (!initialConversationId) return;
+
+    const run = async () => {
+      try {
+        const rows = await getMessages(initialConversationId);
+        setProjectConversationId(initialConversationId);
+
+        const rebuiltMessages: StudioMessage[] = rows.map((r) => {
+          if (r.role === 'assistant') {
+            const cleaned = sanitizeAssistantText(r.content ?? '');
+            const jsonText = extractJsonObject(cleaned);
+            if (jsonText) {
+              try {
+                const parsed = JSON.parse(jsonText) as AiStudioResponse;
+                const display = (parsed?.message ?? '').trim() || cleaned;
+                return { role: 'assistant', display, api: cleaned };
+              } catch {
+                return { role: 'assistant', display: cleaned, api: cleaned };
+              }
+            }
+            return { role: 'assistant', display: cleaned, api: cleaned };
+          }
+          return { role: 'user', display: r.content ?? '', api: r.content ?? '' };
+        });
+
+        // Rebuild file list from latest assistant JSON that includes files.
+        let latestFiles: GeneratedFile[] = [];
+        for (const m of rows) {
+          if (m.role !== 'assistant') continue;
+          const cleaned = sanitizeAssistantText(m.content ?? '');
+          const jsonText = extractJsonObject(cleaned);
+          if (!jsonText) continue;
+          try {
+            const parsed = JSON.parse(jsonText) as AiStudioResponse;
+            const nextFiles = (parsed?.files ?? []).filter(
+              (f): f is AiFile => Boolean(f && typeof f.path === 'string' && typeof f.content === 'string')
+            );
+            if (nextFiles.length) {
+              latestFiles = nextFiles.map((f) => ({ name: f.path, code: f.content }));
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        setMessages(rebuiltMessages);
+        setFiles(latestFiles);
+        if (latestFiles.length) {
+          setOpenFileNames(latestFiles.map((f) => f.name));
+          setSelectedFileName((prev) => prev ?? latestFiles[0]!.name);
+        }
+
+        requestAnimationFrame(() => {
+          bottomRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+        });
+      } catch (_) {
+        // If user isn't authenticated or load fails, keep empty state.
+      }
+    };
+
+    void run();
+  }, [initialConversationId, mode]);
 
   const handleCopy = async () => {
     if (!selectedFile) return;
@@ -551,6 +683,76 @@ export default function FrameworkStudio({
     };
   }, [actionsOpen]);
 
+  useEffect(() => {
+    if (!codeContextMenu) return;
+
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-code-context-root="true"]')) return;
+      setCodeContextMenu(null);
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCodeContextMenu(null);
+    };
+
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [codeContextMenu]);
+
+  useEffect(() => {
+    if (!fileContextMenu) return;
+
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-file-context-root="true"]')) return;
+      setFileContextMenu(null);
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFileContextMenu(null);
+    };
+
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [fileContextMenu]);
+
+  const deleteFileByName = (name: string) => {
+    setFiles((prev) => {
+      const next = prev.filter((f) => f.name !== name);
+      setOpenFileNames((tabs) => tabs.filter((n) => n !== name));
+      setSelectedFileName((selected) => (selected === name ? next[0]?.name ?? null : selected));
+      return next;
+    });
+  };
+
+  const handleUploadFile = async (file: File) => {
+    const name = (file?.name || '').trim() || 'file.txt';
+    let content = '';
+    try {
+      content = await file.text();
+    } catch (_) {
+      // Fallback for older browsers
+      content = '';
+    }
+
+    setFiles((prev) => {
+      const next = prev.filter((f) => f.name !== name);
+      return [{ name, code: content }, ...next];
+    });
+    openAndSelectFile(name);
+  };
+
   return (
     <div className="h-screen bg-transparent overflow-hidden">
       {showPersonalMenu && !resolvedShowTopBar && <Header />}
@@ -562,7 +764,7 @@ export default function FrameworkStudio({
             className="flex items-center gap-2 text-gray-700 hover:text-gray-900 dark:text-white/70 dark:hover:text-white transition-colors"
           >
             <ArrowLeft size={18} />
-            <span className="text-sm">Retour</span>
+            <span className="text-sm">Back</span>
           </button>
 
           {mode === 'code' ? (
@@ -694,7 +896,7 @@ export default function FrameworkStudio({
                 (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
               }}
               className="w-3 mx-2 flex items-center justify-center cursor-col-resize select-none"
-              title="Glisse pour ajuster la largeur"
+              title="Drag to resize"
             >
               <div className="h-20 w-full rounded-full bg-white/30 dark:bg-white/10 border border-white/35 dark:border-white/10 flex items-center justify-center">
                 <GripVertical size={16} className="text-gray-700/70 dark:text-white/50" />
@@ -721,7 +923,7 @@ export default function FrameworkStudio({
                         <input
                           value={fileFilter}
                           onChange={(e) => setFileFilter(e.target.value)}
-                          placeholder="Filtrer les fichiers…"
+                          placeholder="Filter files…"
                           className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-white/35 dark:bg-white/10 border border-white/45 dark:border-white/12 text-gray-900 dark:text-white placeholder-gray-500/70 dark:placeholder-white/50 outline-none"
                         />
                       </div>
@@ -744,6 +946,10 @@ export default function FrameworkStudio({
                               <button
                                 key={f.name}
                                 onClick={() => openAndSelectFile(f.name)}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  openFileContextMenu({ x: e.clientX, y: e.clientY }, f.name);
+                                }}
                                 className={
                                   'w-full text-left text-sm rounded-xl px-3 py-2 border transition-colors ' +
                                   (selectedFileName === f.name
@@ -768,7 +974,7 @@ export default function FrameworkStudio({
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-semibold text-gray-900 dark:text-white">Code</div>
                       <div className="text-xs text-gray-600 dark:text-white/70 truncate">
-                        {selectedFile ? selectedFile.name : 'Sélectionne un fichier'}
+                        {selectedFile ? selectedFile.name : 'Select a file'}
                       </div>
 
                       {mode === 'code' && openFileNames.length > 0 && (
@@ -796,7 +1002,7 @@ export default function FrameworkStudio({
                                     e.stopPropagation();
                                     closeTab(name);
                                   }}
-                                  title="Fermer"
+                                  title="Close"
                                 >
                                   <X size={14} />
                                 </span>
@@ -832,7 +1038,7 @@ export default function FrameworkStudio({
                             disabled={files.length === 0 || exporting || zipping}
                             className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            Exporter vers dossier…
+                            Export to folder…
                           </button>
 
                           <button
@@ -841,7 +1047,7 @@ export default function FrameworkStudio({
                             onClick={handleDownloadZip}
                             disabled={files.length === 0 || zipping || exporting}
                             className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Télécharger en ZIP (un seul fichier)"
+                            title="Download as ZIP (single file)"
                           >
                             ZIP
                           </button>
@@ -856,7 +1062,7 @@ export default function FrameworkStudio({
                             disabled={files.length === 0}
                             className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            Télécharger tout
+                            Download all
                           </button>
 
                           <button
@@ -869,7 +1075,7 @@ export default function FrameworkStudio({
                             disabled={!selectedFile}
                             className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            Télécharger ce fichier
+                            Download this file
                           </button>
 
                           <div className="h-px bg-black/10 dark:bg-white/10" />
@@ -884,14 +1090,22 @@ export default function FrameworkStudio({
                             disabled={!selectedFile}
                             className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            {copied ? 'Copié' : 'Copier'}
+                            {copied ? 'Copied' : 'Copy'}
                           </button>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex-1 min-h-0 flex flex-col">
+                  <div
+                    className="flex-1 min-h-0 flex flex-col"
+                    onContextMenu={(e) => {
+                      if (mode !== 'code') return;
+                      e.preventDefault();
+                      openCodeContextMenu({ x: e.clientX, y: e.clientY });
+                    }}
+                    title={mode === 'code' ? 'Right-click to import a file…' : undefined}
+                  >
                     {selectedFile ? (
                       mode === 'code' ? (
                         <>
@@ -929,7 +1143,7 @@ export default function FrameworkStudio({
                               <span className="px-2 py-1 rounded-full border border-white/45 bg-white/30 dark:bg-white/10 dark:border-white/12">
                                 {selectedFileLanguage ?? 'text'}
                               </span>
-                              <span>{selectedFileLineCount} lignes</span>
+                              <span>{selectedFileLineCount} lines</span>
                             </div>
                             <div className="truncate">UTF-8</div>
                           </div>
@@ -943,11 +1157,80 @@ export default function FrameworkStudio({
                       )
                     ) : (
                       <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-gray-600 dark:text-white/60">
-                        Sélectionne un fichier pour l’ouvrir.
+                        Right-click to add a document.
                       </div>
                     )}
                   </div>
+
+                  {mode === 'code' && (
+                    <input
+                      ref={fileUploadRef}
+                      type="file"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        // Reset so selecting the same file twice triggers change.
+                        e.target.value = '';
+                        if (!f) return;
+                        void handleUploadFile(f);
+                      }}
+                    />
+                  )}
+
+                  {mode === 'code' && codeContextMenu && (
+                    contextMenuPortalTarget &&
+                    createPortal(
+                      <div
+                        data-code-context-root="true"
+                        className="fixed z-[9999]"
+                        style={{ left: codeContextMenu.x, top: codeContextMenu.y }}
+                        role="menu"
+                      >
+                        <div className="w-60 rounded-2xl border border-black/5 dark:border-white/12 bg-white/85 dark:bg-slate-900/75 text-gray-900 dark:text-white/90 backdrop-blur-md shadow-2xl overflow-hidden">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="w-full text-left px-4 py-2.5 text-sm text-gray-900 dark:text-white/90 hover:bg-black/5 dark:hover:bg-white/10"
+                            onClick={() => {
+                              setCodeContextMenu(null);
+                              fileUploadRef.current?.click();
+                            }}
+                          >
+                            Import a file…
+                          </button>
+                        </div>
+                      </div>,
+                      contextMenuPortalTarget
+                    )
+                  )}
                 </div>
+
+                {mode === 'code' && fileContextMenu &&
+                  contextMenuPortalTarget &&
+                  createPortal(
+                    <div
+                      data-file-context-root="true"
+                      className="fixed z-[9999]"
+                      style={{ left: fileContextMenu.x, top: fileContextMenu.y }}
+                      role="menu"
+                    >
+                      <div className="w-56 rounded-2xl border border-black/5 dark:border-white/12 bg-white/85 dark:bg-slate-900/75 text-gray-900 dark:text-white/90 backdrop-blur-md shadow-2xl overflow-hidden">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="w-full text-left px-4 py-2.5 text-sm text-red-600 dark:text-red-300 hover:bg-black/5 dark:hover:bg-white/10"
+                          onClick={() => {
+                            const name = fileContextMenu.name;
+                            setFileContextMenu(null);
+                            deleteFileByName(name);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>,
+                    contextMenuPortalTarget
+                  )}
               </div>
             </div>
           </div>

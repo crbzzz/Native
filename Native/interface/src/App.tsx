@@ -7,6 +7,9 @@ import CodeStudio from './pages/CodeStudio';
 import RedM from './pages/RedM';
 import FiveM from './pages/FiveM';
 import Admin from './pages/Admin';
+import Documentation from './pages/Documentation';
+import Pricing from './pages/Pricing';
+import Changelog from './pages/Changelog';
 import { onAuthStateChange } from './lib/auth';
 import { applyTheme, getStoredTheme } from './lib/theme';
 import { supabase } from './lib/supabase';
@@ -15,7 +18,7 @@ const AUTH_DISABLED = false;
 
 type AppKey = 'redm' | 'fivem';
 
-type PageType = 'home' | 'chat' | 'apps' | 'studio' | 'admin' | 'admin_login' | AppKey;
+type PageType = 'home' | 'chat' | 'apps' | 'studio' | 'docs' | 'pricing' | 'changelog' | 'admin' | 'admin_login' | AppKey;
 
 function pageFromPath(pathname: string): PageType {
   const p = (pathname || '/').toLowerCase();
@@ -24,6 +27,9 @@ function pageFromPath(pathname: string): PageType {
   if (p === '/chat') return 'chat';
   if (p === '/apps') return 'apps';
   if (p === '/studio') return 'studio';
+  if (p === '/docs') return 'docs';
+  if (p === '/pricing') return 'pricing';
+  if (p === '/changelog') return 'changelog';
   if (p === '/redm') return 'redm';
   if (p === '/fivem') return 'fivem';
   return 'home';
@@ -35,6 +41,9 @@ function pathFromPage(page: PageType): string {
   if (page === 'chat') return '/chat';
   if (page === 'apps') return '/apps';
   if (page === 'studio') return '/studio';
+  if (page === 'docs') return '/docs';
+  if (page === 'pricing') return '/pricing';
+  if (page === 'changelog') return '/changelog';
   if (page === 'redm') return '/redm';
   if (page === 'fivem') return '/fivem';
   return '/';
@@ -212,6 +221,9 @@ function App() {
               onNewChat={() => navigate('chat')}
               onApps={() => navigate('apps')}
               onOpenAuth={() => setShowAuth(true)}
+              onDocs={() => navigate('docs')}
+              onPricing={() => navigate('pricing')}
+              onChangelog={() => navigate('changelog')}
             />
           )}
           {currentPage === 'chat' && (
@@ -219,6 +231,14 @@ function App() {
               user={AUTH_DISABLED ? { id: 'disabled' } : user}
               onBackHome={() => navigate('home')}
               onAppClick={() => navigate('apps')}
+              onOpenStudioProject={(conversationId) => {
+                try {
+                  window.localStorage.setItem('native:studio:openConversationId', conversationId);
+                } catch (_) {
+                  // ignore
+                }
+                navigate('studio');
+              }}
               onRequireAuth={() => setShowAuth(true)}
             />
           )}
@@ -233,6 +253,10 @@ function App() {
               }}
             />
           )}
+
+          {currentPage === 'docs' && <Documentation onBack={() => navigate('home')} />}
+          {currentPage === 'pricing' && <Pricing onBack={() => navigate('home')} />}
+          {currentPage === 'changelog' && <Changelog onBack={() => navigate('home')} />}
 
           {currentPage === 'studio' && <CodeStudio onBack={() => navigate('apps')} />}
 

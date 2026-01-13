@@ -7,10 +7,11 @@ interface SidebarProps {
   onNewChat: () => void;
   onApps: () => void;
   onHome: () => void;
-  conversations?: Array<{ id: string; title: string }>;
+  conversations?: Array<{ id: string; title: string; kind?: 'chat' | 'studio' }>;
   selectedId?: string | null;
   onSelectConversation?: (id: string) => void;
   onDeleteConversation?: (id: string) => void;
+  onOpenStudioProject?: (id: string) => void;
 }
 
 export default function Sidebar({
@@ -23,6 +24,7 @@ export default function Sidebar({
   selectedId,
   onSelectConversation,
   onDeleteConversation,
+  onOpenStudioProject,
 }: SidebarProps) {
   useEffect(() => {
     if (!open) return;
@@ -95,16 +97,28 @@ export default function Sidebar({
                       key={conv.id}
                       className={
                         'group flex items-center justify-between gap-2 px-3 py-2 rounded-xl transition-colors cursor-pointer ' +
-                        (selectedId === conv.id
+                        (selectedId === conv.id && conv.kind !== 'studio'
                           ? 'bg-white/45 dark:bg-white/12'
                           : 'hover:bg-white/35 dark:hover:bg-white/10')
                       }
                       onClick={() => {
-                        onSelectConversation?.(conv.id);
+                        if (conv.kind === 'studio') {
+                          onOpenStudioProject?.(conv.id);
+                        } else {
+                          onSelectConversation?.(conv.id);
+                        }
                         onOpenChange(false);
                       }}
                     >
-                      <span className="text-sm text-gray-900 dark:text-white truncate flex-1">{conv.title}</span>
+                      <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
+                        {conv.title}
+                      </span>
+
+                      {conv.kind === 'studio' && (
+                        <span className="text-[11px] px-2 py-1 rounded-full border border-white/40 dark:border-white/12 bg-white/25 dark:bg-white/10 text-gray-700 dark:text-white/70">
+                          Studio
+                        </span>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();

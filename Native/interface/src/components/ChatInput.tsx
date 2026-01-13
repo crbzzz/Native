@@ -283,7 +283,7 @@ export default function ChatInput({
             aria-pressed={Boolean(deepSearch)}
             onClick={() => onDeepSearchChange?.(!deepSearch)}
             className={
-              'flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border ' +
+              'flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border whitespace-nowrap ' +
               (deepSearch
                 ? 'text-gray-900 border-gray-300 bg-gray-100/80 dark:text-white dark:border-white/15 dark:bg-white/10'
                 : 'text-gray-600 border-transparent hover:text-gray-800 dark:text-white/70 dark:hover:text-white')
@@ -298,7 +298,7 @@ export default function ChatInput({
             aria-pressed={Boolean(reason)}
             onClick={() => onReasonChange?.(!reason)}
             className={
-              'flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border ' +
+              'hidden sm:flex items-center gap-1.5 transition-colors text-sm rounded-full px-3 py-1.5 border whitespace-nowrap ' +
               (reason
                 ? 'text-gray-900 border-gray-300 bg-gray-100/80 dark:text-white dark:border-white/15 dark:bg-white/10'
                 : 'text-gray-600 border-transparent hover:text-gray-800 dark:text-white/70 dark:hover:text-white')
