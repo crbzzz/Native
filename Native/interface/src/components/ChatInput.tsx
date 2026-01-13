@@ -325,6 +325,20 @@ export default function ChatInput({
             </span>
         </button>
       </div>
+
+      {(sttError || sttInfo) && (
+        <div className="mt-2 px-2">
+          {sttError ? (
+            <p className="text-xs text-red-700 dark:text-red-300">
+              Transcription: {sttError}
+            </p>
+          ) : sttInfo ? (
+            <p className="text-xs text-gray-700 dark:text-white/70">
+              Transcription ajoutée à l’input.
+            </p>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

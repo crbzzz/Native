@@ -7,9 +7,10 @@ import { getSfxEnabled, setSfxEnabled } from '../lib/sfx';
 
 interface HeaderProps {
   onHome?: () => void;
+  placement?: 'floating' | 'inline';
 }
 
-export default function Header({ onHome }: HeaderProps) {
+export default function Header({ onHome, placement = 'floating' }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setThemeState] = useState<ThemeMode>('light');
   const [sfxEnabled, setSfxEnabledState] = useState(true);
@@ -204,11 +205,14 @@ export default function Header({ onHome }: HeaderProps) {
         );
 
   return (
-    <div className="fixed top-4 right-4 z-60">
+    <div className={placement === 'inline' ? 'relative' : 'fixed top-4 right-4 z-60'}>
       <button
         type="button"
         onClick={() => setMenuOpen((v) => !v)}
-        className="w-10 h-10 flex items-center justify-center bg-white/30 text-gray-900 dark:text-gray-100 border border-white/40 dark:border-white/15 rounded-full hover:bg-white/40 transition-colors backdrop-blur-md"
+        className={
+          (placement === 'inline' ? 'w-9 h-9 ' : 'w-10 h-10 ') +
+          'flex items-center justify-center bg-white/30 text-gray-900 dark:text-gray-100 border border-white/40 dark:border-white/15 rounded-full hover:bg-white/40 transition-colors backdrop-blur-md'
+        }
         title="Settings"
       >
         <User size={20} />

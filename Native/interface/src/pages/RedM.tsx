@@ -7,7 +7,7 @@ interface Props {
 export default function RedM({ onBack }: Props) {
   return (
     <FrameworkStudio
-      title="  "
+      title="RedM Studio"
       onBack={onBack}
       defaultFrameworkId="vorp"
       frameworks={[

@@ -47,3 +47,30 @@
 .dark .native-scrollbar::-webkit-scrollbar-thumb:hover {
 	background: rgba(255, 255, 255, 0.42);
 }
+
+@keyframes nativeGradientShift {
+	0% {
+		background-position: 0% 50%;
+	}
+	50% {
+		background-position: 100% 50%;
+	}
+	100% {
+		background-position: 0% 50%;
+	}
+}
+
+/* Apply on an element that already has a gradient background (Tailwind bg-gradient-*) */
+.native-animated-gradient {
+	background-size: 220% 220%;
+	animation: nativeGradientShift 7s ease-in-out infinite;
+}
+
+/* Soft animated background wash (used in Code Studio hero) */
+.native-animated-bg {
+	background: radial-gradient(1200px circle at 20% 20%, rgba(56, 189, 248, 0.40), transparent 55%),
+		radial-gradient(1200px circle at 85% 30%, rgba(99, 102, 241, 0.35), transparent 55%),
+		radial-gradient(1200px circle at 60% 85%, rgba(217, 70, 239, 0.32), transparent 60%);
+	background-size: 180% 180%;
+	animation: nativeGradientShift 10s ease-in-out infinite;
+}

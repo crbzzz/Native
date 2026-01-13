@@ -3,6 +3,7 @@ import Auth from './pages/Auth';
 import Home from './pages/Home';
 import Chat from './pages/Chat';
 import Apps from './pages/Apps';
+import CodeStudio from './pages/CodeStudio';
 import RedM from './pages/RedM';
 import FiveM from './pages/FiveM';
 import Admin from './pages/Admin';
@@ -14,7 +15,7 @@ const AUTH_DISABLED = false;
 
 type AppKey = 'redm' | 'fivem';
 
-type PageType = 'home' | 'chat' | 'apps' | 'admin' | 'admin_login' | AppKey;
+type PageType = 'home' | 'chat' | 'apps' | 'studio' | 'admin' | 'admin_login' | AppKey;
 
 function pageFromPath(pathname: string): PageType {
   const p = (pathname || '/').toLowerCase();
@@ -22,6 +23,7 @@ function pageFromPath(pathname: string): PageType {
   if (p === '/admin') return 'admin';
   if (p === '/chat') return 'chat';
   if (p === '/apps') return 'apps';
+  if (p === '/studio') return 'studio';
   if (p === '/redm') return 'redm';
   if (p === '/fivem') return 'fivem';
   return 'home';
@@ -32,6 +34,7 @@ function pathFromPage(page: PageType): string {
   if (page === 'admin') return '/admin';
   if (page === 'chat') return '/chat';
   if (page === 'apps') return '/apps';
+  if (page === 'studio') return '/studio';
   if (page === 'redm') return '/redm';
   if (page === 'fivem') return '/fivem';
   return '/';
@@ -219,15 +222,19 @@ function App() {
               onRequireAuth={() => setShowAuth(true)}
             />
           )}
+
           {currentPage === 'apps' && (
             <Apps
               onBack={() => navigate('chat')}
-              onOpenApp={(app: AppKey) => {
+              onOpenApp={(app) => {
+                if (app === 'studio') navigate('studio');
                 if (app === 'redm') navigate('redm');
                 if (app === 'fivem') navigate('fivem');
               }}
             />
           )}
+
+          {currentPage === 'studio' && <CodeStudio onBack={() => navigate('apps')} />}
 
           {currentPage === 'admin_login' && (
             <div className="min-h-screen bg-transparent flex items-center justify-center p-6">
