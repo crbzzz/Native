@@ -29,5 +29,5 @@ if (-not $pythonExe) {
 	throw "Cannot find python venv. Looked in: $($pythonCandidates -join '; ')"
 }
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$root`"; `"$pythonExe`" -m uvicorn backend.app:app --reload --port $BackendPort"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$root`"; `"$pythonExe`" -m uvicorn --app-dir `"$root`" backend.app:app --reload --port $BackendPort"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$root`"; npm --prefix interface run dev -- --host $FrontendHost --port $FrontendPort"

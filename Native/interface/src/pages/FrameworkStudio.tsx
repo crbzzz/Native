@@ -32,6 +32,30 @@ type StudioMessage = {
 type AiFile = { path: string; content: string };
 type AiStudioResponse = { message?: string; files?: AiFile[] };
 
+function looksLikeBinary(buffer: ArrayBuffer): boolean {
+  // Heuristic: presence of NUL bytes or too many non-text control bytes.
+  // This avoids importing audio/video/images into the code viewer (mp3/png/mp4...).
+  const bytes = new Uint8Array(buffer);
+  if (!bytes.length) return false;
+
+  let nulCount = 0;
+  let suspiciousCount = 0;
+  const sampleLen = Math.min(bytes.length, 8192);
+
+  for (let i = 0; i < sampleLen; i++) {
+    const b = bytes[i];
+    if (b === 0) nulCount++;
+
+    // Allow common whitespace + printable ASCII. Anything else below 0x20 is suspicious.
+    const isAllowedControl = b === 9 || b === 10 || b === 13;
+    if (b < 32 && !isAllowedControl) suspiciousCount++;
+  }
+
+  if (nulCount > 0) return true;
+  // If more than ~2% suspicious control bytes in the sample, treat as binary.
+  return suspiciousCount / sampleLen > 0.02;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -192,6 +216,7 @@ export default function FrameworkStudio({
   const [projectConversationId, setProjectConversationId] = useState<string | null>(initialConversationId ?? null);
   const [codeContextMenu, setCodeContextMenu] = useState<Point | null>(null);
   const [fileContextMenu, setFileContextMenu] = useState<(Point & { name: string }) | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const contextMenuPortalTarget = typeof document !== 'undefined' ? document.body : null;
 
@@ -737,6 +762,31 @@ export default function FrameworkStudio({
   };
 
   const handleUploadFile = async (file: File) => {
+    setImportError(null);
+
+    const type = (file?.type || '').toLowerCase();
+    if (type.startsWith('image/') || type.startsWith('video/') || type.startsWith('audio/')) {
+      setImportError('Fichier non supporté: importe un fichier de code (texte), pas une image/vidéo/audio.');
+      return;
+    }
+
+    // Hard cap to avoid freezing/crashing the page (e.g. large mp3/mp4 or big binaries).
+    const maxBytes = 2_000_000; // ~2MB
+    if ((file?.size ?? 0) > maxBytes) {
+      setImportError('Fichier trop volumineux pour le Code Studio (max ~2MB).');
+      return;
+    }
+
+    try {
+      const head = await file.slice(0, 8192).arrayBuffer();
+      if (looksLikeBinary(head)) {
+        setImportError('Fichier binaire non supporté: importe un fichier texte (code/config).');
+        return;
+      }
+    } catch (_) {
+      // If we can't inspect the file, fall back to trying to read as text.
+    }
+
     const name = (file?.name || '').trim() || 'file.txt';
     let content = '';
     try {
@@ -744,6 +794,12 @@ export default function FrameworkStudio({
     } catch (_) {
       // Fallback for older browsers
       content = '';
+    }
+
+    if (!content.trim()) {
+      // Avoid adding an empty tab for unsupported/empty files.
+      setImportError('Impossible de lire ce fichier comme du texte.');
+      return;
     }
 
     setFiles((prev) => {
@@ -977,6 +1033,20 @@ export default function FrameworkStudio({
                         {selectedFile ? selectedFile.name : 'Select a file'}
                       </div>
 
+                      {mode === 'code' && importError && (
+                        <div className="mt-2 flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-200">
+                          <div className="min-w-0">{importError}</div>
+                          <button
+                            type="button"
+                            className="shrink-0 opacity-80 hover:opacity-100"
+                            onClick={() => setImportError(null)}
+                            title="Fermer"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      )}
+
                       {mode === 'code' && openFileNames.length > 0 && (
                         <div className="mt-2 flex items-center gap-1 overflow-x-auto native-scrollbar">
                           {openFileNames.map((name) => {
@@ -1167,12 +1237,16 @@ export default function FrameworkStudio({
                       ref={fileUploadRef}
                       type="file"
                       className="hidden"
+                      accept="text/*,.txt,.md,.markdown,.js,.jsx,.ts,.tsx,.json,.yml,.yaml,.toml,.xml,.html,.css,.scss,.sass,.py,.lua,.go,.rs,.java,.c,.cpp,.h,.cs,.php,.rb,.sh,.bat,.ps1,.sql,.env,.ini,.cfg,.gitignore"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         // Reset so selecting the same file twice triggers change.
                         e.target.value = '';
                         if (!f) return;
-                        void handleUploadFile(f);
+                        void handleUploadFile(f).catch((err) => {
+                          console.error('Import failed:', err);
+                          setImportError(err instanceof Error ? err.message : String(err));
+                        });
                       }}
                     />
                   )}
