@@ -177,6 +177,14 @@ PRO_TOKEN_CAP = 500_000
 TOPUP_250K = 250_000
 
 
+def _safe_int_env(name: str, default: int) -> int:
+    try:
+        v = int(str(os.getenv(name, str(default))).strip())
+        return v if v > 0 else default
+    except Exception:
+        return default
+
+
 def _month_key(dt: datetime.datetime | None = None) -> str:
     d = dt or datetime.datetime.utcnow()
     return d.strftime("%Y-%m")
@@ -837,6 +845,83 @@ async def chat(
             return s
         return s[:max_chars] + "\n...\n[contenu tronqué]"
 
+    # Guardrails against huge payloads (common cause of upstream proxy resets/overflow)
+    MAX_CHAT_MESSAGES_RAW_CHARS = _safe_int_env("MAX_CHAT_MESSAGES_RAW_CHARS", 250_000)
+    MAX_MISTRAL_PROMPT_CHARS = _safe_int_env("MAX_MISTRAL_PROMPT_CHARS", 60_000)
+    MAX_CHAT_FILES = _safe_int_env("MAX_CHAT_FILES", 6)
+    MAX_SINGLE_FILE_BYTES = _safe_int_env("MAX_SINGLE_FILE_BYTES", 8_000_000)
+
+    if len(messages) > MAX_CHAT_MESSAGES_RAW_CHARS:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "payload_too_large",
+                "detail": "Historique trop volumineux. Démarre un nouveau chat ou supprime des messages.",
+            },
+        )
+
+    def _content_len(v: object) -> int:
+        if v is None:
+            return 0
+        if isinstance(v, str):
+            return len(v)
+        try:
+            return len(json.dumps(v, ensure_ascii=False))
+        except Exception:
+            return len(str(v))
+
+    def _approx_messages_chars(msgs: list[dict]) -> int:
+        total = 0
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            total += _content_len(m.get("content"))
+        return total
+
+    def _trim_history_to_budget(msgs: list[dict], budget: int) -> list[dict]:
+        if budget <= 0 or not msgs:
+            return msgs
+
+        system_msgs: list[dict] = []
+        other_msgs: list[dict] = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            if str(m.get("role") or "") == "system":
+                system_msgs.append(m)
+            else:
+                other_msgs.append(m)
+
+        # Ensure system prompt itself doesn't dominate.
+        for sm in system_msgs:
+            c = sm.get("content")
+            if isinstance(c, str) and len(c) > 6000:
+                sm["content"] = _limit_text(c, max_chars=6000)
+
+        remaining = budget - _approx_messages_chars(system_msgs)
+        if remaining <= 0:
+            return system_msgs
+
+        kept_reversed: list[dict] = []
+        for m in reversed(other_msgs):
+            c_len = _content_len(m.get("content"))
+            if c_len <= remaining:
+                kept_reversed.append(m)
+                remaining -= c_len
+                continue
+
+            # If we can't fit anything yet, truncate the most recent message.
+            if not kept_reversed:
+                truncated = dict(m)
+                c = truncated.get("content")
+                if isinstance(c, str) and remaining > 100:
+                    truncated["content"] = _limit_text(c, max_chars=max(100, remaining))
+                    kept_reversed.append(truncated)
+            break
+
+        kept = list(reversed(kept_reversed))
+        return system_msgs + kept
+
     async def _extract_file_text(f: UploadFile) -> str:
         name = f.filename or "(sans nom)"
         content_type = (f.content_type or "").lower()
@@ -893,8 +978,28 @@ async def chat(
         return f"--- FICHIER: {name} ---\n```text\n{content}\n```"
 
     if files:
+        if len(files) > MAX_CHAT_FILES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": "too_many_files",
+                    "detail": f"Trop de fichiers (max {MAX_CHAT_FILES}).",
+                },
+            )
         file_texts = []
         for f in files:
+            raw_peek = await f.read()
+            if len(raw_peek) > MAX_SINGLE_FILE_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": "file_too_large",
+                        "detail": f"Fichier trop volumineux (max {MAX_SINGLE_FILE_BYTES} bytes).",
+                        "filename": f.filename,
+                    },
+                )
+            # Put the bytes back for the extractor which expects to read the file.
+            f.file.seek(0)
             file_texts.append(await _extract_file_text(f))
 
         if file_texts:
@@ -936,6 +1041,9 @@ async def chat(
     if mode_instructions:
         mistral_messages.append({"role": "system", "content": "\n".join(mode_instructions)})
     mistral_messages += history
+
+    # Prevent sending oversized prompts to the model.
+    mistral_messages = _trim_history_to_budget(mistral_messages, MAX_MISTRAL_PROMPT_CHARS)
 
     headers = {
         "Authorization": f"Bearer {mistral_api_key}",
