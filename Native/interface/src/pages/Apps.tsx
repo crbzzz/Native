@@ -3,12 +3,13 @@ import {
   ArrowLeft,
   Code2,
   Sparkles,
+  Users,
   type LucideIcon,
 } from 'lucide-react';
 
 interface AppsProps {
   onBack: () => void;
-  onOpenApp: (app: 'studio' | 'redm' | 'fivem') => void;
+  onOpenApp: (app: 'studio' | 'redm' | 'fivem' | 'agentlab') => void;
 }
 
 type CatalogApp = {
@@ -18,7 +19,7 @@ type CatalogApp = {
   icon: LucideIcon;
   gradient: string;
   badge?: 'New' | 'Pro' | 'Popular';
-  key: 'studio' | 'redm' | 'fivem';
+  key: 'studio' | 'redm' | 'fivem' | 'agentlab';
 };
 
 export default function Apps({ onBack, onOpenApp }: AppsProps) {
@@ -32,6 +33,15 @@ export default function Apps({ onBack, onOpenApp }: AppsProps) {
         icon: Sparkles,
         gradient: 'from-sky-500 to-fuchsia-500',
         badge: 'Popular',
+      },
+      {
+        id: 'agentlab',
+        key: 'agentlab',
+        name: 'Agent Lab',
+        description: 'Run multi-agent experiments with steering and relations.',
+        icon: Users,
+        gradient: 'from-indigo-500 to-sky-500',
+        badge: 'New',
       },
       {
         id: 'fivem',

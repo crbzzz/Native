@@ -1,10 +1,11 @@
-import { Check, ChevronsUpDown, LogOut, Moon, Sun, User, X } from 'lucide-react';
+import { ChevronsUpDown, LogOut, Moon, Sun, User, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getAccessToken, signOut } from '../lib/auth';
 import { getStoredTheme, setTheme, type ThemeMode } from '../lib/theme';
 import { getSfxEnabled, setSfxEnabled } from '../lib/sfx';
 
+import { NativeSelect } from './NativeSelect';
 type PlanId = 'free' | 'pro';
 
 interface HeaderProps {
@@ -142,19 +143,14 @@ export default function Header({ onHome, placement = 'floating', onSettingsOpenC
                           <p className="text-xs text-gray-600 dark:text-gray-300">Only one available</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Check size={16} className="text-gray-700 dark:text-gray-200" />
-                        <select
+
+                      <div className="w-44">
+                        <NativeSelect
                           value={model}
-                          onChange={(e) => setModel(e.target.value)}
-                          className="text-sm bg-transparent text-gray-900 dark:text-gray-100 outline-none"
-                        >
-                          {modelOptions.map((o) => (
-                            <option key={o.id} value={o.id}>
-                              {o.label}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={setModel}
+                          options={modelOptions.map((o) => ({ value: o.id, label: o.label }))}
+                          buttonClassName="w-full flex items-center justify-between gap-3 px-3 py-1.5 rounded-xl border border-white/35 dark:border-white/12 bg-white/20 dark:bg-white/10 text-sm text-gray-900 dark:text-gray-100 outline-none backdrop-blur-md backdrop-saturate-150 hover:bg-white/30 dark:hover:bg-white/15 transition-colors focus-visible:ring-2 focus-visible:ring-sky-500/25"
+                        />
                       </div>
                     </div>
                   </div>

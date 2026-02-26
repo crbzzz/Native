@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { NativeSelect } from '../components/NativeSelect';
 import { getAccessToken } from '../lib/auth';
 
 type TokenPoint = { month: string; tokens: number };
@@ -137,14 +138,16 @@ export default function Admin() {
 
             <div>
               <label className="block text-xs text-gray-600 dark:text-white/60">Plan</label>
-              <select
+              <NativeSelect
+                className="mt-1"
                 value={plan}
-                onChange={(e) => setPlan((e.target.value === 'pro' ? 'pro' : 'free') as any)}
-                className="mt-1 w-full px-4 py-2.5 rounded-2xl border border-white/45 dark:border-white/12 bg-white/60 dark:bg-slate-900/40 text-gray-900 dark:text-white outline-none"
-              >
-                <option value="free">Free</option>
-                <option value="pro">Pro</option>
-              </select>
+                onChange={(v) => setPlan(v === 'pro' ? 'pro' : 'free')}
+                options={[
+                  { value: 'free', label: 'Free' },
+                  { value: 'pro', label: 'Pro' },
+                ]}
+                buttonClassName="w-full flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl border border-white/45 dark:border-white/12 bg-white/60 dark:bg-slate-900/40 text-gray-900 dark:text-white outline-none backdrop-blur-md backdrop-saturate-150 hover:bg-white/70 dark:hover:bg-slate-900/55 transition-colors focus-visible:ring-2 focus-visible:ring-sky-500/25"
+              />
             </div>
 
             <div>

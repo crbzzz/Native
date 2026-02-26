@@ -4,6 +4,7 @@ import Home from './pages/Home';
 import Chat from './pages/Chat';
 import Apps from './pages/Apps';
 import CodeStudio from './pages/CodeStudio';
+import AgentLab from './pages/AgentLab';
 import RedM from './pages/RedM';
 import FiveM from './pages/FiveM';
 import Admin from './pages/Admin';
@@ -16,13 +17,14 @@ import { supabase } from './lib/supabase';
 
 const AUTH_DISABLED = false;
 
-type AppKey = 'redm' | 'fivem';
+type AppKey = 'redm' | 'fivem' | 'agentlab';
 
 type PageType =
   | 'home'
   | 'chat'
   | 'apps'
   | 'studio'
+  | 'agentlab'
   | 'docs'
   | 'plans'
   | 'changelog'
@@ -37,6 +39,7 @@ function pageFromPath(pathname: string): PageType {
   if (p === '/chat') return 'chat';
   if (p === '/apps') return 'apps';
   if (p === '/studio') return 'studio';
+  if (p === '/agent-lab') return 'agentlab';
   if (p === '/docs') return 'docs';
   if (p === '/plans' || p === '/pricing') return 'plans';
   if (p === '/changelog') return 'changelog';
@@ -51,6 +54,7 @@ function pathFromPage(page: PageType): string {
   if (page === 'chat') return '/chat';
   if (page === 'apps') return '/apps';
   if (page === 'studio') return '/studio';
+  if (page === 'agentlab') return '/agent-lab';
   if (page === 'docs') return '/docs';
   if (page === 'plans') return '/plans';
   if (page === 'changelog') return '/changelog';
@@ -261,6 +265,7 @@ function App() {
                 if (app === 'studio') navigate('studio');
                 if (app === 'redm') navigate('redm');
                 if (app === 'fivem') navigate('fivem');
+                if (app === 'agentlab') navigate('agentlab');
               }}
             />
           )}
@@ -270,6 +275,8 @@ function App() {
           {currentPage === 'changelog' && <Changelog onBack={() => navigate('home')} />}
 
           {currentPage === 'studio' && <CodeStudio onBack={() => navigate('apps')} />}
+
+          {currentPage === 'agentlab' && <AgentLab onBack={() => navigate('apps')} />}
 
           {currentPage === 'admin_login' && (
             <div className="min-h-screen bg-transparent flex items-center justify-center p-6">

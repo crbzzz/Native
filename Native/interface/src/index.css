@@ -2,6 +2,49 @@
 @tailwind components;
 @tailwind utilities;
 
+/* --- Global selection + native controls polish --- */
+
+/* Text selection should remain readable in both themes */
+::selection {
+	background: rgba(59, 130, 246, 0.22);
+	color: rgba(17, 24, 39, 0.95);
+}
+
+.dark ::selection {
+	background: rgba(59, 130, 246, 0.30);
+	color: rgba(255, 255, 255, 0.92);
+}
+
+/* Native <select> dropdown lists (options) often ignore Tailwind and stay white in dark mode.
+   These rules make the opened list consistent across the app. */
+select {
+	color-scheme: light;
+}
+
+.dark select {
+	color-scheme: dark;
+}
+
+select option,
+select optgroup {
+	background-color: rgba(255, 255, 255, 0.98);
+	color: rgba(17, 24, 39, 0.95);
+}
+
+.dark select option,
+.dark select optgroup {
+	background-color: rgba(2, 6, 23, 0.98);
+	color: rgba(255, 255, 255, 0.90);
+}
+
+select option:checked {
+	background-color: rgba(59, 130, 246, 0.22);
+}
+
+.dark select option:checked {
+	background-color: rgba(59, 130, 246, 0.28);
+}
+
 /* Liquid-glass scrollbar for the chat scroller */
 .native-scrollbar {
 	scrollbar-width: thin; /* Firefox */

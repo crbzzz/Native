@@ -172,6 +172,46 @@ async def _supabase_rest_insert(table: str, payload: object) -> object:
         return r.json()
 
 
+async def _supabase_rest_patch(table: str, query: str, payload: object) -> object:
+    supabase_url, _, service, _ = _get_supabase_settings()
+    if not supabase_url or not service:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquant")
+
+    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/{table}?{query}"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.patch(
+            endpoint,
+            headers={
+                "apikey": service,
+                "Authorization": f"Bearer {service}",
+                "Content-Type": "application/json",
+                "Prefer": "return=representation",
+            },
+            json=payload,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase REST patch error ({table}): {r.status_code} {r.text}")
+        return r.json()
+
+
+async def _supabase_rest_delete(table: str, query: str) -> None:
+    supabase_url, _, service, _ = _get_supabase_settings()
+    if not supabase_url or not service:
+        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquant")
+
+    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/{table}?{query}"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.delete(
+            endpoint,
+            headers={
+                "apikey": service,
+                "Authorization": f"Bearer {service}",
+            },
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase REST delete error ({table}): {r.status_code} {r.text}")
+
+
 FREE_TOKEN_CAP = 25_000
 PRO_TOKEN_CAP = 500_000
 TOPUP_250K = 250_000
@@ -1135,6 +1175,521 @@ def _extract_assistant_text(content: object) -> str:
                     parts.append(txt)
         return "\n".join(parts)
     return str(content or "")
+
+
+def _safe_json_extract_object(raw: str) -> dict | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    # Remove possible ```json fences
+    if text.startswith("```"):
+        text = text.replace("```json", "```")
+        text = text.strip().lstrip("`")
+    text = text.strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < 0 or end <= start:
+        return None
+    snippet = text[start : end + 1]
+    try:
+        parsed = json.loads(snippet)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _agent_lab_validate_agents(agents: object) -> list[dict]:
+    if not isinstance(agents, list):
+        return []
+    out: list[dict] = []
+    for a in agents:
+        if not isinstance(a, dict):
+            continue
+        aid = str(a.get("id") or "").strip()
+        name = str(a.get("name") or "").strip()
+        persona = str(a.get("persona") or "").strip()
+        if not aid or not name:
+            continue
+        out.append({"id": aid, "name": name, "persona": persona})
+    return out
+
+
+def _agent_lab_weight(v: object) -> int:
+    try:
+        n = int(v)
+    except Exception:
+        return 0
+    if n < -2:
+        return -2
+    if n > 2:
+        return 2
+    return n
+
+
+def _agent_lab_edge_key(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a <= b else (b, a)
+
+
+async def _agent_lab_load_project(project_id: str, user_id: str) -> dict | None:
+    try:
+        rows = await _supabase_rest_get(
+            "agent_lab_projects",
+            "select=id,user_id,title,topic,agents,settings,suggestions,next_turn,created_at,updated_at"
+            f"&id=eq.{project_id}&limit=1",
+        )
+        row = rows[0] if isinstance(rows, list) and rows else None
+        if not row:
+            return None
+        if str(row.get("user_id") or "") != str(user_id):
+            return None
+        return row
+    except Exception:
+        return None
+
+
+@app.get("/api/agentlab/projects")
+async def agentlab_projects(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    try:
+        rows = await _supabase_rest_get(
+            "agent_lab_projects",
+            "select=id,title,topic,next_turn,created_at,updated_at&user_id=eq."
+            + str(user_id)
+            + "&order=updated_at.desc",
+        )
+        return rows if isinstance(rows, list) else []
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "projects_unavailable", "detail": str(e)})
+
+
+@app.post("/api/agentlab/projects")
+async def agentlab_create_project(payload: dict, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    title = str((payload or {}).get("title") or "").strip() or "Agent Lab"
+    topic = str((payload or {}).get("topic") or "").strip()
+    agents_in = (payload or {}).get("agents")
+
+    agents = _agent_lab_validate_agents(agents_in)
+    if len(agents) < 2:
+        return JSONResponse(status_code=400, content={"error": "invalid_agents", "detail": "At least 2 agents required."})
+    if len(agents) > 8:
+        return JSONResponse(status_code=400, content={"error": "too_many_agents", "detail": "Max 8 agents."})
+
+    settings = (payload or {}).get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    settings = {
+        "max_context_messages": int(settings.get("max_context_messages") or 16),
+        "temperature": float(settings.get("temperature") or 0.4),
+    }
+
+    try:
+        created = await _supabase_rest_insert(
+            "agent_lab_projects",
+            {
+                "user_id": user_id,
+                "title": title,
+                "topic": topic,
+                "agents": agents,
+                "settings": settings,
+                "next_turn": 0,
+                "updated_at": datetime.datetime.utcnow().isoformat(),
+            },
+        )
+        row = created[0] if isinstance(created, list) and created else None
+        if not row:
+            raise RuntimeError("create_failed")
+        return {"project": row}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "create_failed", "detail": str(e)})
+
+
+@app.get("/api/agentlab/projects/{project_id}")
+async def agentlab_get_project(project_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    try:
+        msgs = await _supabase_rest_get(
+            "agent_lab_messages",
+            "select=id,project_id,turn_index,speaker_id,speaker_name,content,steering_prompt,tokens,created_at"
+            f"&project_id=eq.{project_id}&order=turn_index.asc",
+        )
+    except Exception:
+        msgs = []
+
+    try:
+        edges = await _supabase_rest_get(
+            "agent_lab_edges",
+            "select=id,project_id,turn_index,source_id,target_id,weight,label,rationale,created_at"
+            f"&project_id=eq.{project_id}&order=turn_index.asc",
+        )
+    except Exception:
+        edges = []
+
+    return {"project": project, "messages": msgs if isinstance(msgs, list) else [], "edges": edges if isinstance(edges, list) else []}
+
+
+@app.post("/api/agentlab/projects/{project_id}/suggestions")
+async def agentlab_suggestions(project_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    plan = await _get_user_plan(user_id)
+    period = _month_key() if plan == "pro" else _iso_week_key()
+    token_cap = await _get_token_cap(user_id, plan, period)
+    used_int = await _get_tokens_used(user_id, plan, period)
+    if used_int >= token_cap:
+        return JSONResponse(status_code=402, content={"error": "token_limit_reached", "detail": "Token cap reached."})
+
+    mistral_api_key, model_name, base_system_prompt = _get_mistral_settings()
+    if not mistral_api_key:
+        return JSONResponse(status_code=500, content={"error": "missing_mistral_key"})
+
+    agents = _agent_lab_validate_agents(project.get("agents"))
+    topic = str(project.get("topic") or "").strip()
+
+    system = (
+        base_system_prompt
+        + "\n\nTu es un coach d'expérience multi-agents (Agent Lab)."
+        + "\nPropose des prompts de simulation (guidance) utiles et concrets."
+        + "\nRéponds STRICTEMENT en JSON valide, sans Markdown: {\"suggestions\":[{\"title\":string,\"prompt\":string}]}"
+        + "\nContraintes: 6 suggestions max, courtes, actionnables, en français."
+    )
+
+    agents_desc = "\n".join([f"- {a['name']}: {a.get('persona','')[:200]}" for a in agents])
+    user_msg = (
+        f"Sujet: {topic or '(non défini)'}\n"
+        f"Agents:\n{agents_desc}\n\n"
+        "Donne des suggestions pour: cadrage du débat, règles de prise de parole, angles d'analyse, et tests de robustesse."
+    )
+
+    headers = {"Authorization": f"Bearer {mistral_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ],
+        "temperature": 0.3,
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            r = await client.post(MISTRAL_API_URL, headers=headers, json=payload)
+            r.raise_for_status()
+        except Exception as exc:
+            return JSONResponse(status_code=502, content={"error": "mistral_request_failed", "detail": str(exc)})
+        data = r.json()
+
+    raw = data["choices"][0]["message"]["content"]
+    obj = _safe_json_extract_object(str(raw or "")) or {}
+    suggestions = obj.get("suggestions")
+    if not isinstance(suggestions, list):
+        suggestions = []
+    suggestions = suggestions[:6]
+
+    usage = data.get("usage") or {}
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        approx_chars = len(system) + len(user_msg) + len(str(raw or ""))
+        total_tokens = max(1, int(approx_chars / 4))
+    await _add_tokens_used(user_id, plan, period, int(total_tokens))
+
+    try:
+        await _supabase_rest_patch(
+            "agent_lab_projects",
+            f"id=eq.{project_id}",
+            {"suggestions": suggestions, "updated_at": datetime.datetime.utcnow().isoformat()},
+        )
+    except Exception:
+        pass
+
+    return {"suggestions": suggestions}
+
+
+@app.post("/api/agentlab/projects/{project_id}/step")
+async def agentlab_step(project_id: str, payload: dict, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    plan = await _get_user_plan(user_id)
+    period = _month_key() if plan == "pro" else _iso_week_key()
+    token_cap = await _get_token_cap(user_id, plan, period)
+    used_int = await _get_tokens_used(user_id, plan, period)
+    if used_int >= token_cap:
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": "token_limit_reached",
+                "detail": f"Limite atteinte ({token_cap} tokens) pour la période {period}.",
+                "period": period,
+                "plan": plan,
+            },
+        )
+
+    agents = _agent_lab_validate_agents(project.get("agents"))
+    if len(agents) < 2:
+        return JSONResponse(status_code=400, content={"error": "invalid_agents"})
+
+    turn_index = int(project.get("next_turn") or 0)
+    speaker = agents[turn_index % len(agents)]
+    topic = str(project.get("topic") or "").strip()
+    steering_prompt = str((payload or {}).get("steering_prompt") or "").strip()
+
+    settings = project.get("settings") if isinstance(project.get("settings"), dict) else {}
+    max_context = int(settings.get("max_context_messages") or 16)
+    temperature = float(settings.get("temperature") or 0.4)
+    temperature = max(0.0, min(1.2, temperature))
+
+    # Load recent context
+    try:
+        rows = await _supabase_rest_get(
+            "agent_lab_messages",
+            "select=turn_index,speaker_name,content&project_id=eq."
+            + str(project_id)
+            + "&order=turn_index.desc&limit="
+            + str(max(1, min(40, max_context))),
+        )
+        ctx_rows = rows if isinstance(rows, list) else []
+    except Exception:
+        ctx_rows = []
+
+    ctx_rows = list(reversed(ctx_rows))
+    transcript_lines: list[str] = []
+    for r in ctx_rows:
+        if not isinstance(r, dict):
+            continue
+        sn = str(r.get("speaker_name") or "").strip() or "Agent"
+        cc = str(r.get("content") or "").strip()
+        if not cc:
+            continue
+        transcript_lines.append(f"{sn}: {cc}")
+
+    transcript = "\n".join(transcript_lines)
+
+    mistral_api_key, model_name, base_system_prompt = _get_mistral_settings()
+    if not mistral_api_key:
+        return JSONResponse(status_code=500, content={"error": "missing_mistral_key"})
+
+    agent_lines: list[str] = []
+    for a in agents:
+        persona_raw = str(a.get("persona") or "")
+        persona_one_line = " ".join(persona_raw.splitlines()).strip()
+        agent_lines.append(
+            f"- id={a['id']} | name={a['name']} | persona={persona_one_line[:400]}"
+        )
+    agents_block = "\n".join(agent_lines)
+
+    output_schema = (
+        "Réponds STRICTEMENT en JSON valide, sans Markdown, sous la forme:"
+        " {\"message\": string, \"analysis\": string, \"edges\": [{\"source_id\": string, \"target_id\": string, \"weight\": -2..2, \"label\": string, \"rationale\": string}] }\n"
+        "Edges: fournis une photo du graphe COMPLET pour cette étape: une arête par paire non-ordonnée (a<b), sans doublons."
+        " Weight -2 (conflit) .. +2 (fort alignement)."
+    )
+
+    system = (
+        base_system_prompt
+        + "\n\nTu es un simulateur de discussion multi-agents (Agent Lab)."
+        + f"\nTu incarnes UNIQUEMENT l'agent: {speaker['name']} (id={speaker['id']})."
+        + "\nReste cohérent avec sa personnalité."
+        + "\n\nAGENTS:\n"
+        + agents_block
+        + "\n\nRÈGLES:\n"
+        + "- Un seul tour de parole (1 message).\n"
+        + "- Le style doit refléter la persona.\n"
+        + "- N'invente pas de faits; fais de l'analyse et des hypothèses.\n"
+        + "- Ta réponse doit aider le débat à avancer (question, objection, synthèse, piste).\n"
+        + output_schema
+    )
+
+    user_msg = "Sujet: " + (topic or "(non défini)")
+    if steering_prompt:
+        user_msg += "\nGuidance utilisateur: " + steering_prompt
+    if transcript:
+        user_msg += "\n\nTranscript récent:\n" + transcript
+
+    headers = {"Authorization": f"Bearer {mistral_api_key}", "Content-Type": "application/json"}
+    mistral_payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ],
+        "temperature": temperature,
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            r = await client.post(MISTRAL_API_URL, headers=headers, json=mistral_payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail: object
+            try:
+                detail = exc.response.json()
+            except Exception:
+                detail = exc.response.text
+            return JSONResponse(status_code=502, content={"error": "mistral_api_error", "detail": detail})
+        except httpx.RequestError as exc:
+            return JSONResponse(status_code=502, content={"error": "mistral_request_failed", "detail": str(exc)})
+        data = r.json()
+
+    raw = data["choices"][0]["message"]["content"]
+    obj = _safe_json_extract_object(str(raw or ""))
+    if not obj:
+        # fallback: treat raw as message
+        obj = {"message": str(raw or "").strip(), "analysis": "", "edges": []}
+
+    msg_text = str(obj.get("message") or "").strip()
+    analysis_text = str(obj.get("analysis") or "").strip()
+    edges_in = obj.get("edges")
+    edges_list = edges_in if isinstance(edges_in, list) else []
+
+    # Normalize edges; enforce one per unordered pair
+    normalized_edges: dict[tuple[str, str], dict] = {}
+    agent_ids = [a["id"] for a in agents]
+    agent_set = set(agent_ids)
+    for e in edges_list:
+        if not isinstance(e, dict):
+            continue
+        s = str(e.get("source_id") or "").strip()
+        t = str(e.get("target_id") or "").strip()
+        if not s or not t or s == t:
+            continue
+        if s not in agent_set or t not in agent_set:
+            continue
+        a, b = _agent_lab_edge_key(s, t)
+        normalized_edges[(a, b)] = {
+            "source_id": a,
+            "target_id": b,
+            "weight": _agent_lab_weight(e.get("weight")),
+            "label": str(e.get("label") or "").strip()[:80],
+            "rationale": str(e.get("rationale") or "").strip()[:240],
+        }
+
+    # Fill missing pairs with neutral edges
+    for i in range(len(agent_ids)):
+        for j in range(i + 1, len(agent_ids)):
+            a, b = _agent_lab_edge_key(agent_ids[i], agent_ids[j])
+            if (a, b) not in normalized_edges:
+                normalized_edges[(a, b)] = {
+                    "source_id": a,
+                    "target_id": b,
+                    "weight": 0,
+                    "label": "",
+                    "rationale": "",
+                }
+
+    usage = data.get("usage") or {}
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        approx_chars = len(system) + len(user_msg) + len(str(raw or ""))
+        total_tokens = max(1, int(approx_chars / 4))
+
+    await _add_tokens_used(user_id, plan, period, int(total_tokens))
+
+    # Persist message + edges
+    try:
+        created_msg = await _supabase_rest_insert(
+            "agent_lab_messages",
+            {
+                "project_id": project_id,
+                "turn_index": turn_index,
+                "speaker_id": speaker["id"],
+                "speaker_name": speaker["name"],
+                "content": msg_text + ("\n\n[Analyse]\n" + analysis_text if analysis_text else ""),
+                "steering_prompt": steering_prompt or None,
+                "tokens": int(total_tokens),
+            },
+        )
+        msg_row = created_msg[0] if isinstance(created_msg, list) and created_msg else None
+    except Exception:
+        msg_row = None
+
+    edge_rows: list[dict] = []
+    try:
+        edge_payload = []
+        for _k, e in normalized_edges.items():
+            edge_payload.append(
+                {
+                    "project_id": project_id,
+                    "turn_index": turn_index,
+                    "source_id": e["source_id"],
+                    "target_id": e["target_id"],
+                    "weight": int(e["weight"]),
+                    "label": e.get("label") or None,
+                    "rationale": e.get("rationale") or None,
+                }
+            )
+        inserted = await _supabase_rest_insert("agent_lab_edges", edge_payload)
+        edge_rows = inserted if isinstance(inserted, list) else []
+    except Exception:
+        edge_rows = []
+
+    try:
+        await _supabase_rest_patch(
+            "agent_lab_projects",
+            f"id=eq.{project_id}",
+            {"next_turn": int(turn_index) + 1, "updated_at": datetime.datetime.utcnow().isoformat()},
+        )
+    except Exception:
+        pass
+
+    return {
+        "turn_index": turn_index,
+        "speaker": {"id": speaker["id"], "name": speaker["name"]},
+        "message": msg_row,
+        "edges": edge_rows,
+        "tokens": int(total_tokens),
+    }
 
 
 def _looks_like_supported_audio(filename: str | None, content_type: str | None) -> bool:
