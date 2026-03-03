@@ -1234,11 +1234,20 @@ def _agent_lab_edge_key(a: str, b: str) -> tuple[str, str]:
 
 async def _agent_lab_load_project(project_id: str, user_id: str) -> dict | None:
     try:
-        rows = await _supabase_rest_get(
-            "agent_lab_projects",
-            "select=id,user_id,title,topic,agents,settings,suggestions,next_turn,created_at,updated_at"
-            f"&id=eq.{project_id}&limit=1",
-        )
+        try:
+            rows = await _supabase_rest_get(
+                "agent_lab_projects",
+                "select=id,user_id,title,topic,agents,settings,suggestions,next_turn,active_run_id,created_at,updated_at"
+                f"&id=eq.{project_id}&limit=1",
+            )
+        except Exception:
+            # Backward-compat: older schema doesn't have active_run_id.
+            rows = await _supabase_rest_get(
+                "agent_lab_projects",
+                "select=id,user_id,title,topic,agents,settings,suggestions,next_turn,created_at,updated_at"
+                f"&id=eq.{project_id}&limit=1",
+            )
+
         row = rows[0] if isinstance(rows, list) and rows else None
         if not row:
             return None
@@ -1247,6 +1256,54 @@ async def _agent_lab_load_project(project_id: str, user_id: str) -> dict | None:
         return row
     except Exception:
         return None
+
+
+async def _agent_lab_load_run(run_id: str, user_id: str) -> dict | None:
+    try:
+        try:
+            rows = await _supabase_rest_get(
+                "agent_lab_runs",
+                "select=id,project_id,title,pinned_instruction,next_turn,created_at,updated_at" + f"&id=eq.{run_id}&limit=1",
+            )
+        except Exception:
+            # Backward-compat: older schema doesn't have pinned_instruction.
+            rows = await _supabase_rest_get(
+                "agent_lab_runs",
+                "select=id,project_id,title,next_turn,created_at,updated_at" + f"&id=eq.{run_id}&limit=1",
+            )
+        row = rows[0] if isinstance(rows, list) and rows else None
+        if not row:
+            return None
+        project_id = str(row.get("project_id") or "")
+        if not project_id:
+            return None
+        project = await _agent_lab_load_project(project_id, user_id)
+        if not project:
+            return None
+        return row
+    except Exception:
+        return None
+
+
+async def _agent_lab_list_runs(project_id: str, user_id: str) -> list[dict]:
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return []
+    try:
+        try:
+            rows = await _supabase_rest_get(
+                "agent_lab_runs",
+                "select=id,project_id,title,pinned_instruction,next_turn,created_at,updated_at"
+                + f"&project_id=eq.{project_id}&order=created_at.asc",
+            )
+        except Exception:
+            rows = await _supabase_rest_get(
+                "agent_lab_runs",
+                "select=id,project_id,title,next_turn,created_at,updated_at" + f"&project_id=eq.{project_id}&order=created_at.asc",
+            )
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
 
 
 @app.get("/api/agentlab/projects")
@@ -1260,14 +1317,53 @@ async def agentlab_projects(authorization: Optional[str] = Header(None)):
     except Exception:
         return JSONResponse(status_code=401, content={"error": "invalid_auth"})
 
+    # Prefer returning next_turn from active run (multi-run). Fallback to legacy next_turn if migration not applied.
     try:
-        rows = await _supabase_rest_get(
-            "agent_lab_projects",
-            "select=id,title,topic,next_turn,created_at,updated_at&user_id=eq."
-            + str(user_id)
-            + "&order=updated_at.desc",
-        )
-        return rows if isinstance(rows, list) else []
+        try:
+            rows = await _supabase_rest_get(
+                "agent_lab_projects",
+                "select=id,title,topic,active_run_id,created_at,updated_at&user_id=eq."
+                + str(user_id)
+                + "&order=updated_at.desc",
+            )
+        except Exception:
+            rows = await _supabase_rest_get(
+                "agent_lab_projects",
+                "select=id,title,topic,next_turn,created_at,updated_at&user_id=eq."
+                + str(user_id)
+                + "&order=updated_at.desc",
+            )
+
+        projects = rows if isinstance(rows, list) else []
+
+        # If active_run_id exists, hydrate next_turn from agent_lab_runs.
+        run_ids: list[str] = []
+        for p in projects:
+            if isinstance(p, dict) and p.get("active_run_id"):
+                run_ids.append(str(p.get("active_run_id")))
+
+        if run_ids:
+            try:
+                in_list = ",".join([f'"{rid}"' for rid in run_ids])
+                run_rows = await _supabase_rest_get(
+                    "agent_lab_runs",
+                    "select=id,next_turn" + f"&id=in.({in_list})",
+                )
+                run_map: dict[str, int] = {}
+                if isinstance(run_rows, list):
+                    for r in run_rows:
+                        if isinstance(r, dict) and r.get("id") is not None:
+                            run_map[str(r.get("id"))] = int(r.get("next_turn") or 0)
+                for p in projects:
+                    if not isinstance(p, dict):
+                        continue
+                    rid = str(p.get("active_run_id") or "")
+                    if rid and rid in run_map:
+                        p["next_turn"] = run_map[rid]
+            except Exception:
+                pass
+
+        return projects
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "projects_unavailable", "detail": str(e)})
 
@@ -1317,9 +1413,212 @@ async def agentlab_create_project(payload: dict, authorization: Optional[str] = 
         row = created[0] if isinstance(created, list) and created else None
         if not row:
             raise RuntimeError("create_failed")
+
+        # Create a default run and make it active (if schema supports it).
+        try:
+            run_created = await _supabase_rest_insert(
+                "agent_lab_runs",
+                {
+                    "project_id": row.get("id"),
+                    "title": "Run 1",
+                    "next_turn": 0,
+                    "updated_at": datetime.datetime.utcnow().isoformat(),
+                },
+            )
+            run_row = run_created[0] if isinstance(run_created, list) and run_created else None
+            if run_row and run_row.get("id"):
+                await _supabase_rest_patch(
+                    "agent_lab_projects",
+                    f"id=eq.{row.get('id')}",
+                    {"active_run_id": run_row.get("id"), "updated_at": datetime.datetime.utcnow().isoformat()},
+                )
+                row["active_run_id"] = run_row.get("id")
+        except Exception:
+            pass
+
         return {"project": row}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "create_failed", "detail": str(e)})
+
+
+@app.patch("/api/agentlab/projects/{project_id}")
+async def agentlab_update_project(project_id: str, payload: dict, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    title = (payload or {}).get("title")
+    topic = (payload or {}).get("topic")
+    patch: dict[str, object] = {"updated_at": datetime.datetime.utcnow().isoformat()}
+    if isinstance(title, str):
+        patch["title"] = title.strip() or project.get("title")
+    if isinstance(topic, str):
+        patch["topic"] = topic.strip()
+
+    if len(patch.keys()) <= 1:
+        return {"project": project}
+
+    try:
+        updated = await _supabase_rest_patch("agent_lab_projects", f"id=eq.{project_id}", patch)
+        row = updated[0] if isinstance(updated, list) and updated else project
+        return {"project": row}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "update_failed", "detail": str(e)})
+
+
+@app.patch("/api/agentlab/projects/{project_id}/agents")
+async def agentlab_update_agents(project_id: str, payload: dict, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    agents = _agent_lab_validate_agents((payload or {}).get("agents"))
+    if len(agents) < 2:
+        return JSONResponse(status_code=400, content={"error": "invalid_agents", "detail": "At least 2 agents required."})
+    if len(agents) > 8:
+        return JSONResponse(status_code=400, content={"error": "too_many_agents", "detail": "Max 8 agents."})
+
+    try:
+        updated = await _supabase_rest_patch(
+            "agent_lab_projects",
+            f"id=eq.{project_id}",
+            {"agents": agents, "updated_at": datetime.datetime.utcnow().isoformat()},
+        )
+        row = updated[0] if isinstance(updated, list) and updated else project
+        return {"project": row}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "update_failed", "detail": str(e)})
+
+
+@app.delete("/api/agentlab/projects/{project_id}")
+async def agentlab_delete_project(project_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    try:
+        await _supabase_rest_delete("agent_lab_projects", f"id=eq.{project_id}")
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "delete_failed", "detail": str(e)})
+
+
+@app.get("/api/agentlab/projects/{project_id}/runs")
+async def agentlab_get_runs(project_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    runs = await _agent_lab_list_runs(project_id, user_id)
+    return {"runs": runs}
+
+
+@app.post("/api/agentlab/projects/{project_id}/runs")
+async def agentlab_create_run(project_id: str, payload: dict, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    title = str((payload or {}).get("title") or "").strip() or "Run"
+
+    try:
+        created = await _supabase_rest_insert(
+            "agent_lab_runs",
+            {
+                "project_id": project_id,
+                "title": title,
+                "next_turn": 0,
+                "updated_at": datetime.datetime.utcnow().isoformat(),
+            },
+        )
+        row = created[0] if isinstance(created, list) and created else None
+        if not row:
+            raise RuntimeError("create_failed")
+
+        try:
+            await _supabase_rest_patch(
+                "agent_lab_projects",
+                f"id=eq.{project_id}",
+                {"active_run_id": row.get("id"), "updated_at": datetime.datetime.utcnow().isoformat()},
+            )
+        except Exception:
+            pass
+
+        return {"run": row}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "create_failed", "detail": str(e)})
+
+
+@app.post("/api/agentlab/projects/{project_id}/runs/{run_id}/activate")
+async def agentlab_activate_run(project_id: str, run_id: str, authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"error": "auth_required"})
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    try:
+        user_id, _email = await _supabase_get_user_id(access_token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "invalid_auth"})
+
+    project = await _agent_lab_load_project(project_id, user_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "not_found"})
+
+    run = await _agent_lab_load_run(run_id, user_id)
+    if not run or str(run.get("project_id") or "") != str(project_id):
+        return JSONResponse(status_code=404, content={"error": "run_not_found"})
+
+    try:
+        await _supabase_rest_patch(
+            "agent_lab_projects",
+            f"id=eq.{project_id}",
+            {"active_run_id": run_id, "updated_at": datetime.datetime.utcnow().isoformat()},
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "activate_failed", "detail": str(e)})
+
+    return {"ok": True}
 
 
 @app.get("/api/agentlab/projects/{project_id}")
@@ -1337,25 +1636,52 @@ async def agentlab_get_project(project_id: str, authorization: Optional[str] = H
     if not project:
         return JSONResponse(status_code=404, content={"error": "not_found"})
 
+    active_run_id = str(project.get("active_run_id") or "") or project_id
+    active_run = await _agent_lab_load_run(active_run_id, user_id)
+    runs = await _agent_lab_list_runs(project_id, user_id)
+
+    # Load messages/edges for active run (preferred). Fallback to legacy per-project data.
+    msgs: object = []
+    edges: object = []
     try:
         msgs = await _supabase_rest_get(
             "agent_lab_messages",
-            "select=id,project_id,turn_index,speaker_id,speaker_name,content,steering_prompt,tokens,created_at"
-            f"&project_id=eq.{project_id}&order=turn_index.asc",
+            "select=id,project_id,run_id,turn_index,speaker_id,speaker_name,content,steering_prompt,tokens,created_at"
+            f"&run_id=eq.{active_run_id}&order=turn_index.asc",
         )
     except Exception:
-        msgs = []
+        try:
+            msgs = await _supabase_rest_get(
+                "agent_lab_messages",
+                "select=id,project_id,turn_index,speaker_id,speaker_name,content,steering_prompt,tokens,created_at"
+                f"&project_id=eq.{project_id}&order=turn_index.asc",
+            )
+        except Exception:
+            msgs = []
 
     try:
         edges = await _supabase_rest_get(
             "agent_lab_edges",
-            "select=id,project_id,turn_index,source_id,target_id,weight,label,rationale,created_at"
-            f"&project_id=eq.{project_id}&order=turn_index.asc",
+            "select=id,project_id,run_id,turn_index,source_id,target_id,weight,label,rationale,created_at"
+            f"&run_id=eq.{active_run_id}&order=turn_index.asc",
         )
     except Exception:
-        edges = []
+        try:
+            edges = await _supabase_rest_get(
+                "agent_lab_edges",
+                "select=id,project_id,turn_index,source_id,target_id,weight,label,rationale,created_at"
+                f"&project_id=eq.{project_id}&order=turn_index.asc",
+            )
+        except Exception:
+            edges = []
 
-    return {"project": project, "messages": msgs if isinstance(msgs, list) else [], "edges": edges if isinstance(edges, list) else []}
+    return {
+        "project": project,
+        "runs": runs,
+        "active_run": active_run,
+        "messages": msgs if isinstance(msgs, list) else [],
+        "edges": edges if isinstance(edges, list) else [],
+    }
 
 
 @app.post("/api/agentlab/projects/{project_id}/suggestions")
@@ -1480,7 +1806,10 @@ async def agentlab_step(project_id: str, payload: dict, authorization: Optional[
     if len(agents) < 2:
         return JSONResponse(status_code=400, content={"error": "invalid_agents"})
 
-    turn_index = int(project.get("next_turn") or 0)
+    active_run_id = str(project.get("active_run_id") or "") or project_id
+    run = await _agent_lab_load_run(active_run_id, user_id)
+
+    turn_index = int((run or {}).get("next_turn") or project.get("next_turn") or 0)
     speaker = agents[turn_index % len(agents)]
     topic = str(project.get("topic") or "").strip()
     steering_prompt = str((payload or {}).get("steering_prompt") or "").strip()
@@ -1494,14 +1823,25 @@ async def agentlab_step(project_id: str, payload: dict, authorization: Optional[
     try:
         rows = await _supabase_rest_get(
             "agent_lab_messages",
-            "select=turn_index,speaker_name,content&project_id=eq."
-            + str(project_id)
+            "select=turn_index,speaker_name,content&run_id=eq."
+            + str(active_run_id)
             + "&order=turn_index.desc&limit="
             + str(max(1, min(40, max_context))),
         )
         ctx_rows = rows if isinstance(rows, list) else []
     except Exception:
-        ctx_rows = []
+        # Legacy fallback
+        try:
+            rows = await _supabase_rest_get(
+                "agent_lab_messages",
+                "select=turn_index,speaker_name,content&project_id=eq."
+                + str(project_id)
+                + "&order=turn_index.desc&limit="
+                + str(max(1, min(40, max_context))),
+            )
+            ctx_rows = rows if isinstance(rows, list) else []
+        except Exception:
+            ctx_rows = []
 
     ctx_rows = list(reversed(ctx_rows))
     transcript_lines: list[str] = []
@@ -1515,6 +1855,44 @@ async def agentlab_step(project_id: str, payload: dict, authorization: Optional[
         transcript_lines.append(f"{sn}: {cc}")
 
     transcript = "\n".join(transcript_lines)
+
+    # Persistent, unique instruction (stored at run level). The idea is:
+    # - If user sends a new steering_prompt, persist it as the run's pinned instruction.
+    # - For subsequent steps, always apply the pinned instruction exactly once (not duplicated in transcript).
+    pinned_instruction = ""
+    try:
+        pinned_instruction = str((run or {}).get("pinned_instruction") or "").strip()
+    except Exception:
+        pinned_instruction = ""
+
+    # Backward-compat fallback if the DB schema doesn't have pinned_instruction yet.
+    if not pinned_instruction:
+        try:
+            pinned_instruction = str((settings or {}).get("pinned_instruction") or "").strip()
+        except Exception:
+            pinned_instruction = ""
+
+    if steering_prompt:
+        pinned_instruction = steering_prompt
+        now_iso = datetime.datetime.utcnow().isoformat()
+        try:
+            await _supabase_rest_patch(
+                "agent_lab_runs",
+                f"id=eq.{active_run_id}",
+                {"pinned_instruction": steering_prompt, "updated_at": now_iso},
+            )
+        except Exception:
+            # Backward-compat: store in project settings as a fallback.
+            try:
+                new_settings = dict(settings or {})
+                new_settings["pinned_instruction"] = steering_prompt
+                await _supabase_rest_patch(
+                    "agent_lab_projects",
+                    f"id=eq.{project_id}",
+                    {"settings": new_settings, "updated_at": now_iso},
+                )
+            except Exception:
+                pass
 
     mistral_api_key, model_name, base_system_prompt = _get_mistral_settings()
     if not mistral_api_key:
@@ -1552,8 +1930,8 @@ async def agentlab_step(project_id: str, payload: dict, authorization: Optional[
     )
 
     user_msg = "Sujet: " + (topic or "(non défini)")
-    if steering_prompt:
-        user_msg += "\nGuidance utilisateur: " + steering_prompt
+    if pinned_instruction:
+        user_msg += "\nInstruction (persistante): " + pinned_instruction
     if transcript:
         user_msg += "\n\nTranscript récent:\n" + transcript
 
@@ -1638,18 +2016,24 @@ async def agentlab_step(project_id: str, payload: dict, authorization: Optional[
 
     # Persist message + edges
     try:
-        created_msg = await _supabase_rest_insert(
-            "agent_lab_messages",
-            {
-                "project_id": project_id,
-                "turn_index": turn_index,
-                "speaker_id": speaker["id"],
-                "speaker_name": speaker["name"],
-                "content": msg_text + ("\n\n[Analyse]\n" + analysis_text if analysis_text else ""),
-                "steering_prompt": steering_prompt or None,
-                "tokens": int(total_tokens),
-            },
-        )
+        msg_payload = {
+            "project_id": project_id,
+            "run_id": active_run_id,
+            "turn_index": turn_index,
+            "speaker_id": speaker["id"],
+            "speaker_name": speaker["name"],
+            "content": msg_text + ("\n\n[Analyse]\n" + analysis_text if analysis_text else ""),
+            "steering_prompt": steering_prompt or None,
+            "tokens": int(total_tokens),
+        }
+
+        try:
+            created_msg = await _supabase_rest_insert("agent_lab_messages", msg_payload)
+        except Exception:
+            # Legacy schema fallback
+            msg_payload.pop("run_id", None)
+            created_msg = await _supabase_rest_insert("agent_lab_messages", msg_payload)
+
         msg_row = created_msg[0] if isinstance(created_msg, list) and created_msg else None
     except Exception:
         msg_row = None
@@ -1661,6 +2045,7 @@ async def agentlab_step(project_id: str, payload: dict, authorization: Optional[
             edge_payload.append(
                 {
                     "project_id": project_id,
+                    "run_id": active_run_id,
                     "turn_index": turn_index,
                     "source_id": e["source_id"],
                     "target_id": e["target_id"],
@@ -1669,16 +2054,40 @@ async def agentlab_step(project_id: str, payload: dict, authorization: Optional[
                     "rationale": e.get("rationale") or None,
                 }
             )
-        inserted = await _supabase_rest_insert("agent_lab_edges", edge_payload)
+        try:
+            inserted = await _supabase_rest_insert("agent_lab_edges", edge_payload)
+        except Exception:
+            # Legacy schema fallback
+            for ep in edge_payload:
+                ep.pop("run_id", None)
+            inserted = await _supabase_rest_insert("agent_lab_edges", edge_payload)
         edge_rows = inserted if isinstance(inserted, list) else []
     except Exception:
         edge_rows = []
 
+    # Update cursor (run preferred, project fallback)
+    try:
+        await _supabase_rest_patch(
+            "agent_lab_runs",
+            f"id=eq.{active_run_id}",
+            {"next_turn": int(turn_index) + 1, "updated_at": datetime.datetime.utcnow().isoformat()},
+        )
+    except Exception:
+        try:
+            await _supabase_rest_patch(
+                "agent_lab_projects",
+                f"id=eq.{project_id}",
+                {"next_turn": int(turn_index) + 1, "updated_at": datetime.datetime.utcnow().isoformat()},
+            )
+        except Exception:
+            pass
+
+    # Always bump project updated_at if possible.
     try:
         await _supabase_rest_patch(
             "agent_lab_projects",
             f"id=eq.{project_id}",
-            {"next_turn": int(turn_index) + 1, "updated_at": datetime.datetime.utcnow().isoformat()},
+            {"updated_at": datetime.datetime.utcnow().isoformat()},
         )
     except Exception:
         pass

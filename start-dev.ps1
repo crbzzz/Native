@@ -10,5 +10,4 @@ if (-not (Test-Path $innerScript)) {
   throw "Cannot find inner dev script at: $innerScript"
 }
 
-# Delegate to the actual project root (Native/Native) to avoid venv/path confusion.
 & $innerScript

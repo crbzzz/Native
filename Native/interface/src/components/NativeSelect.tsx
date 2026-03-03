@@ -73,7 +73,7 @@ export function NativeSelect(props: {
   };
 
   return (
-    <div ref={rootRef} className={className || ''}>
+    <div ref={rootRef} className={(className || '') + ' relative'}>
       <button
         ref={buttonRef}
         type="button"
@@ -126,9 +126,9 @@ export function NativeSelect(props: {
           role="listbox"
           className={
             (menuClassName ||
-              'mt-2 rounded-2xl border border-white/35 dark:border-white/12 bg-white/70 dark:bg-slate-950/65 backdrop-blur-md backdrop-saturate-150 shadow-lg overflow-hidden') +
+              'absolute z-50 top-full mt-2 rounded-2xl border border-white/35 dark:border-white/12 bg-white/70 dark:bg-slate-950/65 backdrop-blur-md backdrop-saturate-150 shadow-lg overflow-hidden') +
             ' ' +
-            (align === 'right' ? 'ml-auto' : '')
+            (align === 'right' ? 'right-0' : 'left-0')
           }
           style={{ minWidth: '100%' }}
         >
@@ -166,10 +166,6 @@ export function NativeSelect(props: {
                 </button>
               );
             })}
-          </div>
-
-          <div className="px-3.5 py-2 border-t border-white/25 dark:border-white/10 text-[11px] text-gray-600 dark:text-white/55">
-            ↑↓ navigate • Enter select • Esc close
           </div>
         </div>
       )}

@@ -14,6 +14,16 @@ export type AgentLabProject = {
   settings?: Record<string, unknown>;
   suggestions?: Array<{ title?: string; prompt?: string }>;
   next_turn?: number;
+  active_run_id?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AgentLabRun = {
+  id: string;
+  project_id: string;
+  title: string;
+  next_turn?: number;
   created_at?: string;
   updated_at?: string;
 };
@@ -21,6 +31,7 @@ export type AgentLabProject = {
 export type AgentLabMessage = {
   id: string;
   project_id: string;
+  run_id?: string;
   turn_index: number;
   speaker_id: string;
   speaker_name: string;
@@ -33,6 +44,7 @@ export type AgentLabMessage = {
 export type AgentLabEdge = {
   id: string;
   project_id: string;
+  run_id?: string;
   turn_index: number;
   source_id: string;
   target_id: string;
@@ -108,8 +120,54 @@ export async function createAgentLabProject(input: {
   return expectJson(res);
 }
 
-export async function getAgentLabProject(projectId: string): Promise<{ project: AgentLabProject; messages: AgentLabMessage[]; edges: AgentLabEdge[] }> {
+export async function getAgentLabProject(
+  projectId: string
+): Promise<{ project: AgentLabProject; runs?: AgentLabRun[]; active_run?: AgentLabRun | null; messages: AgentLabMessage[]; edges: AgentLabEdge[] }> {
   const res = await authedFetch(`/api/agentlab/projects/${encodeURIComponent(projectId)}`);
+  return expectJson(res);
+}
+
+export async function updateAgentLabProject(projectId: string, patch: { title?: string; topic?: string }): Promise<{ project: AgentLabProject }> {
+  const res = await authedFetch(`/api/agentlab/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  return expectJson(res);
+}
+
+export async function updateAgentLabAgents(projectId: string, agents: AgentLabAgent[]): Promise<{ project: AgentLabProject }> {
+  const res = await authedFetch(`/api/agentlab/projects/${encodeURIComponent(projectId)}/agents`, {
+    method: 'PATCH',
+    body: JSON.stringify({ agents }),
+  });
+  return expectJson(res);
+}
+
+export async function deleteAgentLabProject(projectId: string): Promise<{ ok: boolean }> {
+  const res = await authedFetch(`/api/agentlab/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  });
+  return expectJson(res);
+}
+
+export async function listAgentLabRuns(projectId: string): Promise<{ runs: AgentLabRun[] }> {
+  const res = await authedFetch(`/api/agentlab/projects/${encodeURIComponent(projectId)}/runs`);
+  return expectJson(res);
+}
+
+export async function createAgentLabRun(projectId: string, title: string): Promise<{ run: AgentLabRun }> {
+  const res = await authedFetch(`/api/agentlab/projects/${encodeURIComponent(projectId)}/runs`, {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+  return expectJson(res);
+}
+
+export async function activateAgentLabRun(projectId: string, runId: string): Promise<{ ok: boolean }> {
+  const res = await authedFetch(`/api/agentlab/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/activate`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
   return expectJson(res);
 }
 
