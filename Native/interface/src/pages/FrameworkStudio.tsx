@@ -4,6 +4,7 @@ import { ArrowLeft, GripVertical, MoreVertical, Search, X } from 'lucide-react';
 import ChatInput from '../components/ChatInput';
 import MessageContent from '../components/MessageContent';
 import Header from '../components/Header';
+import { NativeSelect } from '../components/NativeSelect';
 import { sendChat, type ChatMessage } from '../lib/nativeChat';
 import { sendChatPersisted } from '../lib/nativeChat';
 import { sanitizeAssistantText } from '../lib/sanitizeAssistantText';
@@ -839,17 +840,14 @@ export default function FrameworkStudio({
           {mode !== 'code' && hasFrameworks && (
             <div className="flex items-center gap-3">
               <div className="text-sm text-gray-700 dark:text-white/70">Framework</div>
-              <select
-                value={frameworkId}
-                onChange={(e) => setFrameworkId(e.target.value)}
-                className="text-sm rounded-xl px-3 py-1.5 bg-white/35 dark:bg-white/10 border border-white/45 dark:border-white/12 text-gray-900 dark:text-white outline-none"
-              >
-                {frameworks!.map((f) => (
-                  <option key={f.id} value={f.id} className="text-gray-900">
-                    {f.label}
-                  </option>
-                ))}
-              </select>
+              <div className="w-56">
+                <NativeSelect
+                  value={frameworkId}
+                  onChange={setFrameworkId}
+                  options={frameworks!.map((f) => ({ value: f.id, label: f.label }))}
+                  buttonClassName="w-full flex items-center justify-between gap-3 text-sm rounded-xl px-3 py-1.5 bg-white/35 dark:bg-white/10 border border-white/45 dark:border-white/12 text-gray-900 dark:text-white outline-none backdrop-blur-md backdrop-saturate-150 hover:bg-white/45 dark:hover:bg-white/15 transition-colors focus-visible:ring-2 focus-visible:ring-sky-500/25"
+                />
+              </div>
             </div>
           )}
 
