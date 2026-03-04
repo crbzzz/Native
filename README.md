@@ -1,0 +1,1 @@
+Including Mistral API, NativeAI is a ChatBot Interface, with Applications like "Code Studio" to code into the website, or Agentic Application with the Model to analyze the links between agents on a debate.
